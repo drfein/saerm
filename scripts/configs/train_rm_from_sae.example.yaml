@@ -1,0 +1,26 @@
+btrm:
+  repo: "danielfein/bt-rewmodel-meta-llama_Llama-3.2-3B-final-20250513_082322"
+  hf_token: "${HF_TOKEN}"
+  device: "cuda"
+  max_length: 2048
+
+sae:
+  dir: "outputs/sae_btrm_lastlayer/sae"
+  # If provided, the script will train the SAERM head from precomputed features
+  # instead of re-encoding text through the base model.
+  features_dir: "outputs/sae_btrm_lastlayer/features"
+
+rm:
+  encode_batch_size: 32
+  show_progress: true
+  bt_epochs: 15
+  eval_batch_size: 64
+  # optional: cache/reuse evaluation SAE codes instead of recomputing
+  eval_cache: "outputs/saerm_from_sae/eval_cache/eval_codes.pt"
+  # optional: reuse precomputed base-model features for evaluation (must match test order)
+  eval_features_dir: "outputs/sae_btrm_lastlayer/features_test"
+
+outputs:
+  dir: "outputs/saerm_from_sae"
+
+

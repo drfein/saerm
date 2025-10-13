@@ -1,0 +1,25 @@
+{
+  "timestamp": 1760226208,
+  "device": "cuda:0",
+  "accuracy_test": 0.6549534292972058,
+  "total": 2362,
+  "correct": 1547,
+  "btrm": {
+    "repo": "danielfein/bt-rewmodel-Qwen_Qwen2.5-1.5B-final-20250510_202305",
+    "max_length": 2048
+  },
+  "sae": {
+    "path": "outputs/sae_btrm_lastlayer/sae",
+    "num_neurons": 4096,
+    "k_active": 256
+  },
+  "xgb_params": {
+    "objective": "rank:pairwise",
+    "learning_rate": 0.05,
+    "max_depth": 8,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "n_estimators": 500,
+    "tree_method": "hist"
+  }
+}

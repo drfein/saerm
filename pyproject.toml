@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saerm"
+version = "0.1.0"
+description = "Sparse Autoencoder + Reward Model utilities (LitBench + BTRM)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{ name = "SAA Lab" }]
+dependencies = [
+  "torch>=2.1.0",
+  "tqdm>=4.65.0",
+  "numpy>=1.23.0",
+  "transformers>=4.38.0",
+  "datasets>=2.18.0",
+  "python-dotenv>=1.0.0",
+  "PyYAML>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+
