@@ -1,118 +1,103 @@
-## SAERM quick guide
+# SAERM — Interpretable Reward Models Pipeline
 
-This repository provides:
+This repository now focuses on the "Interpretable Reward Models for Robustness" experiment stack. The codebase is organized around three reusable phases:
 
-- `saerm/process_data/litbench_hf.py` — Loader for the LitBench Train/Test-Enhanced datasets on Hugging Face, emitting `PreferencePair`s with robust field handling.
-- `saerm/rm/btrm/` — BTRM: a simple reward model wrapper over a Hugging Face sequence classifier, with a scalarization rule for logits and convenient `.load()`.
-- `saerm/sae/batchtopk_sae.py` — Minimal Batch-Top-K Sparse Autoencoder with training, dead-neuron tracking, and batched inference utilities.
-- `saerm/sae/mounted.py` — Utility to mount a `BatchTopKSAE` on a layer of a base model via a forward hook and train on raw base inputs.
+1. **Embedding caching** – extract hidden representations from transformer checkpoints and persist them with rich metadata.
+2. **Sparse feature learning** – train batch Top-K sparse autoencoders (with learning-rate warmup + cosine decay) on cached features to build interpretable latent spaces.
+3. **Reward head training / evaluation** – fit controllable reward heads (linear, decision tree, XGBoost, GAM, …) on top of the learned features and evaluate on curated preference datasets.
 
-### Installation
+The entire workflow is driven by a single `config.yaml` so that successive scripts compose without manual wiring.
 
-Use your preferred environment; tests assume the package is importable from `src/`.
+## Project layout
 
-```bash
-pip install -e .  # or ensure src/ on PYTHONPATH
-pip install pytest
+```
+src/saerm/
+  config.py        # YAML-backed experiment configuration objects
+  data/            # Dataset adapters (Hugging Face, Skywork, RewardBench)
+  embeddings/     # Embedding caching logic (HF model + tokenizer)
+  sae/            # Sparse autoencoder models, datasets, and trainers
+  heads/          # Linear, tree, XGBoost, GAM heads + training helpers
+  pipeline/       # Orchestration utilities for end-to-end runs
+  storage/        # Filesystem layout helpers for cached artifacts
+  utils/          # Shared utilities (slug builders, etc.)
 ```
 
-### Running tests
+`scripts/` holds thin CLI wrappers that call into the modules above:
 
-- Unit tests (no internet):
+- `cache_embeddings.py` – run one or more embedding jobs.
+- `train_sae.py` – train sparse autoencoders on cached embeddings.
+- `train_head.py` – fit configurable reward heads.
+- `eval_head.py` – evaluate a stored head on a labelled split.
+- `run_pipeline.py` – execute all configured jobs in sequence.
+
+## Getting started
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .[gam]  # add [gam] only if you plan to use GAM heads
+```
+
+All scripts read `config.yaml` by default; override with `--config path/to/file.yaml`.
+
+### Example workflow
+
+1. Cache embeddings:
+   ```bash
+   python scripts/cache_embeddings.py --job-id flan-t5-small-skywork-last
+   ```
+2. Train a sparse autoencoder on those embeddings:
+   ```bash
+   python scripts/train_sae.py --job-id flan-t5-small-skywork-sae
+   ```
+3. Fit a reward head:
+   ```bash
+   python scripts/train_head.py --job-id flan-t5-small-skywork-linear
+   ```
+4. Evaluate the head:
+   ```bash
+   python scripts/eval_head.py --job-id flan-t5-small-skywork-linear
+   ```
+
+`run_pipeline.py` chains steps 1–3 using the jobs defined in the configuration file and is useful for CI smoke tests or quick reruns.
+
+## Configuration schema
+
+`config.yaml` drives the entire experiment. Key sections:
+
+- `storage`: root directory plus subdirectory names for embeddings, SAEs, and heads.
+- `datasets`: named dataset entries (typically Hugging Face ids) used by jobs. Use `field_mapping` to rename raw columns (e.g. map Hugging Face fields to `prompt`, `chosen`, `rejected`).
+- `embedding_jobs`: which model/layer/dataset combinations to cache. Each job describes the model id, target layer, dataset key, tokenizer override, and sampling controls.
+- `sae_jobs`: sparse autoencoder jobs that reference an embedding job id and list training hyperparameters.
+  - Optional keys: `log_interval`, `wandb_project`, `wandb_entity`, `wandb_name` (enable Weights & Biases logging with live dead-neuron % and batch R² metrics).
+- `head_jobs`: reward head jobs that reference embedding/SAE job ids, choose a head type, and name the dataset column that contains numeric targets for supervised training.
+
+The default `config.yaml` gives a working template for Skywork preferences (training) and RewardBench (evaluation). Adjust dataset field mappings or targets to suit your needs.
+
+## Dataset adapters
+
+- `saerm.data.iter_skywork_pairs` – iterate Skywork/Skywork-Reward-Preference-80K-v0.2 examples as `(prompt, chosen, rejected)` triples with metadata.
+- `saerm.data.iter_reward_bench_examples` – iterate RewardBench v2 entries (prompt + competing responses + human label).
+
+Use these adapters when crafting custom preprocessing scripts or sanity checks.
+
+## Extending the pipeline
+
+- Add new embedding backbones by inserting entries into `embedding_jobs`.
+- Implement alternate feature learners by creating modules under `saerm/sae/` and reusing the storage + config plumbing.
+- Introduce new reward heads by subclassing `heads.base.PredictionHead` and registering with `HeadFactory.register("your_head", YourHeadClass)`.
+- Build domain-specific evaluation flows by composing dataset adapters with `scripts/eval_head.py` or your own CLI.
+
+## Testing
 
 ```bash
 pytest
 ```
 
-- Hugging Face integration tests (internet + token):
+Current tests cover config parsing and storage layout helpers. Add integration tests per job when you plug in real models/datasets (these often require Hugging Face auth + large downloads, so keep them opt-in).
 
-```bash
-export HF_TOKEN=hf_xxx
-pytest -m hf
-```
+## Notes
 
-Optional: set `BTRM_REPO_ID` to choose a specific model for BTRM loading; by default a tiny DistilBERT SST2 model is used to minimize downloads.
-
-### Module notes
-
-- `LitBenchHF` resolves `chosen`/`rejected` across multiple keys and drops blanks/identical pairs.
-- `BTRM` composes prompt/body into a single string and maps logits to a scalar: squeeze if 1-dim, difference if 2-dim, else mean.
-- `BatchTopKSAE` trains with batch-wide Top-K sparsification; at eval, enforces per-sample K.
-- `MountedSAE` freezes the base model, captures layer activations via a hook, and trains only the SAE.
-
-
-### API reference
-
-#### `saerm/process_data/litbench_hf.py`
-
-- `class LitBenchHF`
-  - `__init__(hf_token: str | None = None, train_repo_id: str = "SAA-Lab/LitBench-Train", test_repo_id: str = "SAA-Lab/LitBench-Test-Enhanced")`
-    - Inputs: optional HF token and repo IDs.
-    - Side effects: downloads HF datasets for train/test.
-  - `train() -> list[PreferencePair]`
-    - Output: list of pairs with non-empty, non-identical `chosen/rejected` strings.
-  - `test() -> list[PreferencePair]`
-    - Output: as above, from the test-enhanced repo.
-  - Static: `_get_first_nonempty(ex: dict, keys: list[str]) -> str`
-    - Output: first non-empty trimmed field in `keys`, else empty string.
-
-- `dataclass PreferencePair`
-  - Fields: `chosen: str`, `rejected: str`.
-
-- `class BasePreferenceDataset`
-  - Abstract: `train() -> Sequence[PreferencePair]`, `test() -> Sequence[PreferencePair]`.
-  - Helper: `as_text_tuples(split: str = "train") -> list[tuple[str, str]]`.
-
-#### `saerm/rm/btrm/`
-
-- `class BTRM`
-  - `__init__(model: Any, tokenizer: Any, max_length: int = 512, device: str = "cpu")`
-    - Inputs: HF `PreTrainedModel` (sequence classification) and tokenizer.
-  - `reward(body: str, prompt: str | None = None) -> float`
-    - Inputs: response text; optional prompt.
-    - Output: scalar Python `float` score from model logits.
-  - `train(dataset: Any) -> None`
-    - Raises `NotImplementedError` in this package variant.
-  - `@classmethod load(path: str, config: Mapping[str, Any]) -> BTRM`
-    - Inputs: HF repo ID or local directory; config keys: `hf_token`, `max_length`, `device`, `trust_remote_code`.
-    - Output: initialized `BTRM` with loaded tokenizer/model on device.
-  - Internals:
-    - `_compose_input(body, prompt) -> str`: joins prompt/response for scoring.
-    - `_scalar_score(logits) -> tensor-like`: squeeze if 1-d, diff if 2-d, else mean over last dim.
-
-- `class BaseRewardModel`
-  - Abstract: `reward(body: str, prompt: str | None = None) -> float`, `train(dataset: Any) -> None`, `@classmethod load(path, config) -> BaseRewardModel`.
-
-#### `saerm/sae/batchtopk_sae.py`
-
-- `def criterion(x, x_hat, pre_codes, codes, dictionary) -> torch.Tensor`
-  - Inputs: reconstruction terms and activations; includes small revival term.
-  - Output: scalar tensor loss.
-
-- `class BatchTopKSAE(nn.Module)`
-  - `__init__(input_dim: int, num_neurons: int, k_active: int, *, device: str | None = None)`
-    - Inputs: dimensions and K; picks CPU/CUDA by default.
-  - `forward(x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]`
-    - Input: `x` of shape `(B, input_dim)`.
-    - Outputs: `(x_hat: (B, input_dim), info: {pre_codes, codes, dictionary})` with `codes` shape `(B, num_neurons)`.
-  - `fit(X_train: torch.Tensor, X_val: torch.Tensor | None = None, *, batch_size=512, learning_rate=5e-4, n_epochs=100, patience=5, clip_grad=1.0, show_progress=True) -> dict[str, list]`
-    - Output: history dict with `train_loss` and optional `val_loss` lists.
-  - `get_activations(inputs: list | np.ndarray | torch.Tensor, batch_size=8192, show_progress=True) -> np.ndarray`
-    - Output: dense codes `(N, num_neurons)` computed in eval mode.
-
-#### `saerm/sae/mounted.py`
-
-- `class MountedSAE(nn.Module)`
-  - `__init__(base_model: nn.Module, layer: str | nn.Module, *, sae: BatchTopKSAE | None = None, num_neurons: int | None = None, k_active: int | None = None, device: str | None = None, flatten: bool = True, activation_transform: callable | None = None)`
-    - Inputs: base model and layer (dotted path or module); provide `sae` or `(num_neurons, k_active)` for lazy creation; optional transform and flattening.
-    - Behavior: freezes base model params and registers a forward hook on the target layer.
-  - `forward(x, *, return_base_output: bool = False) -> tuple[torch.Tensor, dict]`
-    - Inputs: base-model inputs (tensor, dict of tensors, list/tuple as expected by `base_model`).
-    - Outputs: `(x_hat, info)` where `info['codes']` are SAE codes; includes `base_output` if requested.
-  - `fit(X_train, X_val: object | None = None, *, batch_size=64, learning_rate=5e-4, n_epochs=10, patience=3, clip_grad=1.0, show_progress=True) -> dict[str, list]`
-    - Inputs: raw base-model inputs (tensor, dict with tensors, or list/tuple items).
-    - Output: history dict with `train_loss` and optional `val_loss`.
-  - `get_activations(inputs: torch.Tensor, batch_size: int = 256, show_progress: bool = True) -> torch.Tensor`
-    - Output: SAE codes `(N, num_neurons)`.
-
-
+- Hugging Face datasets/models usually require authentication tokens for private artifacts; export `HF_TOKEN` if necessary.
+- Embedding caching defaults to the last hidden state CLS token. Modify `EmbeddingCacheManager` if you need pooled representations or per-token features.
+- Decision tree and XGBoost heads provide simple knob-based control. Consider authoring custom heads to add veto/monotonic constraints tailored to your domain.

@@ -1,0 +1,55 @@
+storage:
+  root_url: "/nlp/scr/drfein/saerm"
+  embeddings_dir: "embeddings"
+  sae_dir: "sae"
+  heads_dir: "heads"
+
+datasets:
+  skywork_train:
+    name: "Skywork/Skywork-Reward-Preference-80K-v0.2"
+    split: "train"
+    field_mapping:
+      prompt: "prompt"
+      chosen: "chosen"
+      rejected: "rejected"
+  reward_bench_eval:
+    name: "allenai/reward-bench-2"
+    split: "test"
+    field_mapping:
+      prompt: "prompt"
+      response_a: "chosen"
+      response_b: "rejected"
+      label: "label"
+
+embedding_jobs:
+  - job_id: "skywork-rm"
+    model: "Skywork/Skywork-Reward-V2-Qwen3-0.6B"
+    layer: "last"
+    dataset: "skywork_train"
+    batch_size: 64
+    max_examples: null
+    prompt_field: "prompt"
+
+sae_jobs:
+  - job_id: "flan-t5-small-skywork-sae"
+    embedding_job: "flan-t5-small-skywork-last"
+    hidden_size: 1024
+    k_active: 64
+    l1_coef: 0.002
+    learning_rate: 0.001
+    steps: 2000
+    batch_size: 64
+    device: "auto"
+    checkpoint_interval: 500
+
+head_jobs:
+  - job_id: "flan-t5-small-skywork-linear"
+    embedding_job: "flan-t5-small-skywork-last"
+    sae_job: "flan-t5-small-skywork-sae"
+    dataset: "skywork_train"
+    target_field: "score"
+    head_type: "linear"
+    params:
+      alpha: 0.1
+    train_split: "train"
+    eval_split: null

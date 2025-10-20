@@ -18,6 +18,9 @@ dependencies = [
   "datasets>=2.18.0",
   "python-dotenv>=1.0.0",
   "PyYAML>=6.0",
+  "scikit-learn>=1.3.0",
+  "xgboost>=2.0.0",
+  "joblib>=1.3.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -26,4 +29,6 @@ where = ["src"]
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[project.optional-dependencies]
+gam = ["pygam>=0.9.0"]
 
