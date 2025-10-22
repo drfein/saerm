@@ -44,8 +44,14 @@ class EmbeddingJobConfig:
     batch_size: int = 16
     max_examples: Optional[int] = None
     tokenizer: Optional[str] = None
-    prompt_field: str = "prompt"
+    prompt_field: Optional[str] = "prompt"
     response_field: Optional[str] = None
+    text_field: Optional[str] = None
+    chat_messages_field: Optional[str] = None
+    paired_chat_messages_field: Optional[str] = None
+    paired_text_field: Optional[str] = None
+    chat_add_generation_prompt: bool = False
+    chat_template_kwargs: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -58,8 +64,9 @@ class SAETrainingConfig:
     k_active: int
     l1_coef: float
     learning_rate: float
-    steps: int
     batch_size: int
+    steps: Optional[int] = None
+    epochs: Optional[int] = None
     device: str = "cuda"
     checkpoint_interval: int = 1000
     log_interval: int = 50
@@ -80,11 +87,15 @@ class HeadTrainingConfig:
     embedding_job: str
     sae_job: Optional[str]
     dataset: str
-    target_field: str
     head_type: str
     params: Dict[str, Any] = field(default_factory=dict)
     train_split: str = "train"
     eval_split: Optional[str] = "validation"
+    target_field: Optional[str] = None
+    rejected_embedding_job: Optional[str] = None
+    preference_chosen_field: str = "chosen"
+    preference_rejected_field: str = "rejected"
+    preference_weight_field: Optional[str] = None
 
 
 @dataclass

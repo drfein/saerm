@@ -67,7 +67,7 @@ All scripts read `config.yaml` by default; override with `--config path/to/file.
 
 - `storage`: root directory plus subdirectory names for embeddings, SAEs, and heads.
 - `datasets`: named dataset entries (typically Hugging Face ids) used by jobs. Use `field_mapping` to rename raw columns (e.g. map Hugging Face fields to `prompt`, `chosen`, `rejected`).
-- `embedding_jobs`: which model/layer/dataset combinations to cache. Each job describes the model id, target layer, dataset key, tokenizer override, and sampling controls.
+- `embedding_jobs`: which model/layer/dataset combinations to cache. Each job describes the model id, target layer, dataset key, tokenizer override, and sampling controls. For chat-based sources supply `chat_messages_field` (plus optional `chat_add_generation_prompt` and `chat_template_kwargs`) so `tokenizer.apply_chat_template` can render the conversation faithfully. When you want paired embeddings (e.g. chosen/rejected) from the same dataset row, set `paired_chat_messages_field` or `paired_text_field`; the cache will store both tensors alongside aligned `example_ids` metadata for downstream joins.
 - `sae_jobs`: sparse autoencoder jobs that reference an embedding job id and list training hyperparameters.
   - Optional keys: `log_interval`, `wandb_project`, `wandb_entity`, `wandb_name` (enable Weights & Biases logging with live dead-neuron % and batch R² metrics).
 - `head_jobs`: reward head jobs that reference embedding/SAE job ids, choose a head type, and name the dataset column that contains numeric targets for supervised training.

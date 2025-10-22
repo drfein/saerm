@@ -28,28 +28,32 @@ embedding_jobs:
     dataset: "skywork_train"
     batch_size: 64
     max_examples: null
-    prompt_field: "prompt"
+    chat_messages_field: "chosen"
+    paired_chat_messages_field: "rejected"
+    chat_add_generation_prompt: false
 
 sae_jobs:
-  - job_id: "flan-t5-small-skywork-sae"
-    embedding_job: "flan-t5-small-skywork-last"
-    hidden_size: 1024
-    k_active: 64
+  - job_id: "skywork-sae"
+    embedding_job: "skywork-rm"
+    hidden_size: 512
+    k_active: 4
     l1_coef: 0.002
-    learning_rate: 0.001
-    steps: 2000
-    batch_size: 64
+    learning_rate: 0.00001
+    epochs: 20
+    batch_size: 128
     device: "auto"
     checkpoint_interval: 500
 
 head_jobs:
-  - job_id: "flan-t5-small-skywork-linear"
-    embedding_job: "flan-t5-small-skywork-last"
-    sae_job: "flan-t5-small-skywork-sae"
+  - job_id: "skywork-linear"
+    embedding_job: "skywork-rm"
+    sae_job: "skywork-sae"
     dataset: "skywork_train"
-    target_field: "score"
-    head_type: "linear"
+    head_type: "linear_bt"
     params:
-      alpha: 0.1
+      lr: 0.01
+      max_epochs: 500
+      weight_chosen: 1.0
+      weight_rejected: 1.0
     train_split: "train"
     eval_split: null
