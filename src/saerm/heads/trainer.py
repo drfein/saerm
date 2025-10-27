@@ -52,7 +52,8 @@ class HeadTrainer:
 
     def _train_supervised(self, dataset) -> Dict[str, float]:
         payload = self._cache.load_embeddings(self._job.embedding_job)
-        features, _ = self._extract_features(payload, use_paired=False)
+        supervised_choice = self._job.params.get("supervised_choice", "chosen")
+        features, _ = self._extract_features(payload, choice=str(supervised_choice) if supervised_choice else None)
         targets = self._load_targets(dataset, features.shape[0])
         head = HeadFactory.create(self._job.head_type, **self._job.params)
         head.fit(features, targets)
@@ -84,19 +85,14 @@ class HeadTrainer:
         return {"mse": mse}
 
     def _train_pairwise(self, dataset) -> Dict[str, float]:
-        chosen_payload = self._cache.load_embeddings(self._job.embedding_job)
-        chosen_features, chosen_ids = self._extract_features(chosen_payload, use_paired=False)
+        payload = self._cache.load_embeddings(self._job.embedding_job)
+        chosen_features, chosen_ids = self._extract_features(payload, choice="chosen")
 
         if self._job.rejected_embedding_job:
             rejected_payload = self._cache.load_embeddings(self._job.rejected_embedding_job)
-            rejected_features, rejected_ids = self._extract_features(rejected_payload, use_paired=False)
+            rejected_features, rejected_ids = self._extract_features(rejected_payload, choice="rejected")
         else:
-            if "embeddings_paired" not in chosen_payload:
-                raise ValueError(
-                    f"Head job {self._job.job_id} requires paired embeddings in job "
-                    f"{self._job.embedding_job} or an explicit rejected_embedding_job"
-                )
-            rejected_features, rejected_ids = self._extract_features(chosen_payload, use_paired=True)
+            rejected_features, rejected_ids = self._extract_features(payload, choice="rejected")
 
         chosen_features, rejected_features, aligned_ids = self._align_features(chosen_features, chosen_ids, rejected_features, rejected_ids)
         if chosen_features.size == 0 or rejected_features.size == 0:
@@ -108,17 +104,28 @@ class HeadTrainer:
         weight_rejected = float(head_params.pop("weight_rejected", 1.0))
 
         head = HeadFactory.create(self._job.head_type, **head_params)
-        if not hasattr(head, "fit_pairwise"):
-            raise TypeError(f"Head type {self._job.head_type} does not implement pairwise training")
-
-        fit_metrics = head.fit_pairwise(  # type: ignore[attr-defined]
-            chosen_features,
-            rejected_features,
-            sample_weights=sample_weights,
-            weight_chosen=weight_chosen,
-            weight_rejected=weight_rejected,
-        )
-        fit_metrics = fit_metrics or {}
+        if hasattr(head, "fit_pairwise"):
+            fit_metrics = head.fit_pairwise(  # type: ignore[attr-defined]
+                chosen_features,
+                rejected_features,
+                sample_weights=sample_weights,
+                weight_chosen=weight_chosen,
+                weight_rejected=weight_rejected,
+            ) or {}
+        else:
+            # Fallback: train supervised heads by classifying chosen (1) vs rejected (0)
+            if sample_weights is not None:
+                logger.warning(
+                    "Head type %s lacks pairwise training; ignoring pair weights for supervised fallback",
+                    self._job.head_type,
+                )
+            X = np.vstack([chosen_features, rejected_features])
+            y = np.concatenate([
+                np.ones(chosen_features.shape[0], dtype=np.float32),
+                np.zeros(rejected_features.shape[0], dtype=np.float32),
+            ])
+            head.fit(X, y)
+            fit_metrics = {}
 
         chosen_scores = head.predict(chosen_features)
         rejected_scores = head.predict(rejected_features)
@@ -168,7 +175,7 @@ class HeadTrainer:
     def _prepare_features(self, embedding_job_id: str) -> np.ndarray:
         # Deprecated: retained for backward compatibility if needed elsewhere.
         payload = self._cache.load_embeddings(embedding_job_id)
-        features, _ = self._extract_features(payload, use_paired=False)
+        features, _ = self._extract_features(payload, choice=None)
         return features
 
     def _get_sae_extractor(self, input_dim: int) -> Optional[SAEFeatureExtractor]:
@@ -273,27 +280,53 @@ class HeadTrainer:
         diff = weight_chosen * chosen_scores - weight_rejected * rejected_scores
         return float(np.mean(diff))
 
-    def _extract_features(self, payload: Dict[str, Any], *, use_paired: bool) -> tuple[np.ndarray, Optional[np.ndarray]]:
-        key = "embeddings_paired" if use_paired else "embeddings"
-        if key not in payload:
-            if use_paired:
-                raise ValueError("Paired embeddings not found in payload")
+    def _extract_features(self, payload: Dict[str, Any], *, choice: Optional[str]) -> tuple[np.ndarray, Optional[np.ndarray]]:
+        embeddings = payload.get("embeddings")
+        if embeddings is None:
             raise KeyError("Embedding payload missing 'embeddings'")
-        embeddings = payload[key].float()
-        features = embeddings
+        embeddings = embeddings.float()
+        records = payload.get("records")
+        indices, example_ids = self._select_indices(records, embeddings.shape[0], choice)
+        if not indices:
+            raise ValueError(f"No embeddings found matching choice {choice!r} for job {self._job.embedding_job}")
+        index_tensor = torch.tensor(indices, dtype=torch.long, device=embeddings.device)
+        selected = embeddings.index_select(0, index_tensor)
+        features = selected
         if self._job.sae_job:
-            extractor = self._get_sae_extractor(embeddings.shape[1])
+            extractor = self._get_sae_extractor(selected.shape[1])
             if extractor is not None:
-                features = extractor.transform(embeddings)
-        ids_key = "paired_example_ids" if use_paired else "example_ids"
-        ids_value = payload.get(ids_key)
-        ids_array: Optional[np.ndarray] = None
-        if ids_value is not None:
-            if isinstance(ids_value, torch.Tensor):
-                ids_array = ids_value.detach().cpu().numpy().astype(np.int64, copy=False)
+                features = extractor.transform(selected)
+        return features.cpu().numpy().astype(np.float32, copy=False), example_ids
+
+    def _select_indices(
+        self,
+        records: Optional[List[Dict[str, Any]]],
+        total_rows: int,
+        choice: Optional[str],
+    ) -> tuple[List[int], Optional[np.ndarray]]:
+        if records and len(records) == total_rows:
+            if choice is None:
+                indices = list(range(total_rows))
             else:
-                ids_array = np.asarray(ids_value, dtype=np.int64)
-        return features.cpu().numpy().astype(np.float32, copy=False), ids_array
+                indices = [idx for idx, entry in enumerate(records) if entry.get("choice") == choice]
+            example_ids = np.asarray(
+                [int(records[idx].get("example_index", idx)) for idx in indices],
+                dtype=np.int64,
+            ) if indices else None
+            return indices, example_ids
+
+        logger.warning(
+            "Embedding payload missing aligned records; falling back to alternating split for choice %s",
+            choice or "all",
+        )
+        if choice == "rejected":
+            indices = list(range(1, total_rows, 2))
+        elif choice == "chosen":
+            indices = list(range(0, total_rows, 2))
+        else:
+            indices = list(range(total_rows))
+        example_ids = np.arange(len(indices), dtype=np.int64) if indices else None
+        return indices, example_ids
 
     def _align_features(
         self,

@@ -45,7 +45,7 @@ def main() -> None:
         return
 
     for job in jobs:
-        logging.info("Running embedding job %s (%s %s)", job.job_id, job.model, job.layer)
+        logging.info("Running embedding job %s (%s)", job.job_id, job.model)
         dataset = datasets.get(job.dataset, None)
         cache.run_job(job, dataset)
 

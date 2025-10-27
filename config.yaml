@@ -4,6 +4,9 @@ storage:
   sae_dir: "sae"
   heads_dir: "heads"
 
+baseline:
+  batch_size: 16
+
 datasets:
   skywork_train:
     name: "Skywork/Skywork-Reward-Preference-80K-v0.2"
@@ -22,32 +25,81 @@ datasets:
       label: "label"
 
 embedding_jobs:
+  - job_id: "reward-bench-rm-eval"
+    model: "Skywork/Skywork-Reward-V2-Qwen3-0.6B"
+    dataset: "reward_bench_eval"
+    max_examples: null
+    prompt_field: "prompt"
+    batch_size: 32
+    chosen_field: "chosen"
+    rejected_field: "rejected"
+    chat_add_generation_prompt: false
+
   - job_id: "skywork-rm"
     model: "Skywork/Skywork-Reward-V2-Qwen3-0.6B"
-    layer: "last"
     dataset: "skywork_train"
-    batch_size: 64
     max_examples: null
-    chat_messages_field: "chosen"
-    paired_chat_messages_field: "rejected"
+    prompt_field: "prompt"
+    batch_size: 32
+    chosen_field: "chosen"
+    rejected_field: "rejected"
+    chat_add_generation_prompt: false
+
+  - job_id: "skywork-rm-tulu"
+    model: "allenai/Llama-3.1-Tulu-3-8B-RL-RM-RB2"
+    dataset: "skywork_train"
+    max_examples: null
+    prompt_field: "prompt"
+    batch_size: 16
+    chosen_field: "chosen"
+    rejected_field: "rejected"
+    chat_add_generation_prompt: false
+
+  - job_id: "reward-bench-rm-eval-tulu"
+    model: "allenai/Llama-3.1-Tulu-3-8B-RL-RM-RB2"
+    dataset: "reward_bench_eval"
+    max_examples: null
+    prompt_field: "prompt"
+    batch_size: 32
+    chosen_field: "chosen"
+    rejected_field: "rejected"
     chat_add_generation_prompt: false
 
 sae_jobs:
   - job_id: "skywork-sae"
     embedding_job: "skywork-rm"
-    hidden_size: 512
-    k_active: 4
-    l1_coef: 0.002
+    hidden_size: 16384
+    k_active: 156
+    learning_rate: 0.00005
+    epochs: 20
+    batch_size: 256
+    device: "auto"
+    checkpoint_interval: 500
+
+  - job_id: "skywork-sae-small"
+    embedding_job: "skywork-rm"
+    hidden_size: 128
+    k_active: 8
     learning_rate: 0.00001
     epochs: 20
-    batch_size: 128
+    batch_size: 256
+    device: "auto"
+    checkpoint_interval: 500
+
+  - job_id: "tulu-sae"
+    embedding_job: "skywork-rm-tulu"
+    hidden_size: 1024
+    k_active: 256
+    learning_rate: 0.00005
+    epochs: 20
+    batch_size: 256
     device: "auto"
     checkpoint_interval: 500
 
 head_jobs:
-  - job_id: "skywork-linear"
+  - job_id: "skywork-linear-small"
     embedding_job: "skywork-rm"
-    sae_job: "skywork-sae"
+    sae_job: "skywork-sae-small"
     dataset: "skywork_train"
     head_type: "linear_bt"
     params:
@@ -57,3 +109,39 @@ head_jobs:
       weight_rejected: 1.0
     train_split: "train"
     eval_split: null
+
+  - job_id: "skywork-tree"
+    embedding_job: "skywork-rm"
+    sae_job: "skywork-sae-small"
+    dataset: "skywork_train"
+    head_type: "xgboost"
+    params:
+      lr: 0.01
+      max_epochs: 500
+      weight_chosen: 1.0
+      weight_rejected: 1.0
+    train_split: "train"
+    eval_split: null
+
+head_eval_jobs:
+  - job_id: "reward-bench-eval"
+    head_job: "skywork-linear-small"
+    embedding_job: "reward-bench-rm-eval"
+    dataset: "reward_bench_eval"
+    split: "test"
+
+  - job_id: "tulu-eval"
+    head_job: "tulu-linear"
+    embedding_job: "reward-bench-rm-eval-tulu"
+    dataset: "reward_bench_eval"
+    split: "test"
+
+autointerp_jobs:
+  - job_id: "skywork-sae-autointerp"
+    sae_job: "skywork-sae-small"
+    model_name: "gemini-2.5-flash"
+    max_examples_per_feature: 10
+    batch_size: 32
+    head_job: "skywork-linear-small"
+    head_top_n: 50
+    max_concepts: null

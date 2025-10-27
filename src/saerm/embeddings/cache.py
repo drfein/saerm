@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-import json
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+import os
+from typing import Any, Dict, Iterable, List, Optional
 
 import torch
 from datasets import Dataset, IterableDataset
@@ -11,23 +11,13 @@ from transformers import AutoModel, AutoTokenizer
 
 from ..config import EmbeddingJobConfig
 from ..storage import StorageManager
+from ..verification import verify_embeddings
+from .rendering import ensure_chat_messages, render_messages
+
+if "TRANSFORMERS_CACHE" in os.environ and "HF_HOME" not in os.environ:
+    os.environ["HF_HOME"] = os.environ["TRANSFORMERS_CACHE"]
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_layer_index(layer_spec: str | int, total_layers: int) -> int:
-    if isinstance(layer_spec, int):
-        if layer_spec >= 0:
-            return layer_spec
-        return total_layers + layer_spec
-    if layer_spec.isdigit():
-        return int(layer_spec)
-    if layer_spec.startswith("-") and layer_spec[1:].isdigit():
-        return total_layers + int(layer_spec)
-    if layer_spec == "last":
-        return total_layers - 1
-    raise ValueError(f"Unsupported layer specification: {layer_spec}")
-
 
 class EmbeddingCacheManager:
     """Create and persist embeddings for downstream SAE training."""
@@ -38,197 +28,202 @@ class EmbeddingCacheManager:
 
     def run_job(self, job: EmbeddingJobConfig, dataset: Dataset | IterableDataset) -> None:
         logger.info("Running embedding job %s", job.job_id)
-        model = AutoModel.from_pretrained(job.model, output_hidden_states=True)
+
+        use_bf16 = isinstance(self._device, str) and self._device.startswith("cuda") and torch.cuda.is_available()
+        model_kwargs: Dict[str, Any] = {"output_hidden_states": True}
+        if use_bf16:
+            model_kwargs["torch_dtype"] = torch.bfloat16
+        model = AutoModel.from_pretrained(job.model, **model_kwargs)
         model.to(self._device)
         model.eval()
+
         tokenizer_name = job.tokenizer or job.model
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
-        storage_dir = self._storage.embedding_dir(job.job_id)
-        tensor_path = self._storage.embedding_tensor_path(job.job_id)
-        metadata_path = self._storage.embedding_metadata_path(job.job_id)
+        prompt_field = job.prompt_field or "prompt"
+        chosen_field = job.chosen_field or "chosen"
+        rejected_field = job.rejected_field or "rejected"
 
         embeddings: List[torch.Tensor] = []
-        paired_embeddings: List[torch.Tensor] | None = [] if job.paired_chat_messages_field or job.paired_text_field else None
-        total_processed = 0
-        chat_template_used = False
-        paired_chat_template_used = False
-        example_ids: List[int] = []
+        records: List[Dict[str, Any]] = []
 
-        iterable: Iterable
-        if isinstance(dataset, Dataset):
-            iterable = dataset
-        else:
-            iterable = dataset
+        batch_size = max(1, int(getattr(job, "batch_size", 16) or 16))
+        batch_texts: List[str] = []
+        batch_records: List[Dict[str, Any]] = []
+
+        iterable: Iterable = dataset
 
         for idx, record in enumerate(tqdm(iterable, desc=f"embeddings:{job.job_id}")):
             if job.max_examples is not None and idx >= job.max_examples:
                 break
-            payload_text, used_template = self._build_input_text(record, job, tokenizer)
-            chat_template_used = chat_template_used or used_template
-            inputs = tokenizer(payload_text, return_tensors="pt", truncation=True)
-            inputs = {name: tensor.to(self._device) for name, tensor in inputs.items()}
-            with torch.no_grad():
-                outputs = model(**inputs)
-            hidden_states = outputs.hidden_states
-            if hidden_states is None:
-                raise RuntimeError("Model did not return hidden states; set output_hidden_states=True")
-            layer_idx = _parse_layer_index(job.layer, len(hidden_states))
-            # Use CLS token representation or mean pool if CLS not available.
-            layer_tensor = hidden_states[layer_idx]
-            if layer_tensor.ndim == 3:
-                cls_embedding = layer_tensor[:, 0]
-            else:
-                cls_embedding = layer_tensor
-            embeddings.append(cls_embedding.cpu())
 
-            if paired_embeddings is not None:
-                paired_text, paired_template = self._build_input_text(
-                    record,
-                    job,
-                    tokenizer,
-                    chat_field=job.paired_chat_messages_field,
-                    text_field=job.paired_text_field,
-                )
-                paired_chat_template_used = paired_chat_template_used or paired_template
-                paired_inputs = tokenizer(paired_text, return_tensors="pt", truncation=True)
-                paired_inputs = {name: tensor.to(self._device) for name, tensor in paired_inputs.items()}
-                with torch.no_grad():
-                    paired_outputs = model(**paired_inputs)
-                paired_hidden_states = paired_outputs.hidden_states
-                if paired_hidden_states is None:
-                    raise RuntimeError("Model did not return hidden states; set output_hidden_states=True")
-                paired_layer_tensor = paired_hidden_states[layer_idx]
-                if paired_layer_tensor.ndim == 3:
-                    paired_cls = paired_layer_tensor[:, 0]
+            prompt_value = record.get(prompt_field)
+            for choice, field_name in (("chosen", chosen_field), ("rejected", rejected_field)):
+                raw_value = record[field_name]
+                # If list of plain strings, expand to multiple candidates; if chat messages or single, keep as one
+                candidates: List[str] = []
+                if isinstance(raw_value, list) and (len(raw_value) == 0 or not (isinstance(raw_value[0], dict) and "role" in raw_value[0])):
+                    for item in raw_value:
+                        normalized_messages = ensure_chat_messages(item, prompt_value)
+                        rendered = render_messages(normalized_messages, tokenizer)
+                        candidates.append(rendered)
                 else:
-                    paired_cls = paired_layer_tensor
-                paired_embeddings.append(paired_cls.cpu())
+                    normalized_messages = ensure_chat_messages(raw_value, prompt_value)
+                    rendered = render_messages(normalized_messages, tokenizer)
+                    candidates.append(rendered)
 
-            example_ids.append(idx)
-            total_processed += 1
+                for rendered in candidates:
+                    batch_texts.append(rendered)
+                    batch_records.append({
+                        "dataset": job.dataset,
+                        "example_index": idx,
+                        "choice": choice,
+                        "text": rendered,
+                    })
+
+                if len(batch_texts) >= batch_size:
+                    batch_embeddings = self._encode_text_batch(model, tokenizer, batch_texts)
+                    embeddings.append(batch_embeddings)
+                    records.extend(batch_records)
+                    batch_texts.clear()
+                    batch_records.clear()
+
+        # flush any remainder
+        if batch_texts:
+            batch_embeddings = self._encode_text_batch(model, tokenizer, batch_texts)
+            embeddings.append(batch_embeddings)
+            records.extend(batch_records)
+            batch_texts.clear()
+            batch_records.clear()
 
         if not embeddings:
             raise ValueError(f"No embeddings generated for job {job.job_id}")
 
-        combined = torch.cat(embeddings, dim=0)
-        payload: Dict[str, Any] = {"embeddings": combined, "example_ids": list(example_ids)}
-        if paired_embeddings:
-            paired_combined = torch.cat(paired_embeddings, dim=0)
-            payload["embeddings_paired"] = paired_combined
-            payload["paired_example_ids"] = list(example_ids)
-        torch.save(payload, tensor_path)
-        logger.info("Saved embeddings to %s", tensor_path)
+        embedding_tensor = torch.cat(embeddings, dim=0)
+        if embedding_tensor.ndim != 2:
+            raise ValueError(f"Expected 2D embeddings tensor, found shape {tuple(embedding_tensor.shape)}")
 
+        tensor_path = self._storage.embedding_tensor_path(job.job_id)
+        payload: Dict[str, Any] = {
+            "embeddings": embedding_tensor,
+            "records": records,
+        }
+        torch.save(payload, tensor_path)
+        logger.info(
+            "Saved %d embeddings (dimension %d) for job %s to %s",
+            embedding_tensor.shape[0],
+            embedding_tensor.shape[1],
+            job.job_id,
+            tensor_path,
+        )
+
+        verification = verify_embeddings(
+            payload,
+            expected_dim=embedding_tensor.shape[1],
+            min_std=1e-3,
+            min_unique=min(64, embedding_tensor.shape[0]),
+            require_records=True,
+            expected_choices=("chosen", "rejected"),
+        )
+        if verification["ok"]:
+            logger.info(
+                "Embedding verification passed for job %s | examples=%d dim=%d mean_std=%.3e unique=%d",
+                job.job_id,
+                verification["num_examples"],
+                verification["embedding_dim"],
+                verification["mean_std"],
+                verification["unique_examples"],
+            )
+        else:
+            logger.warning(
+                "Embedding verification issues for job %s: %s",
+                job.job_id,
+                "; ".join(verification["issues"]),
+            )
+
+        metadata_path = self._storage.embedding_metadata_path(job.job_id)
         metadata = {
             "job_id": job.job_id,
             "model": job.model,
-            "layer": job.layer,
+            # 'layer' removed from config; we always use last layer
             "dataset": job.dataset,
-            "count": total_processed,
-            "device": self._device,
-            "chat_messages_field": job.chat_messages_field,
-            "chat_template_used": chat_template_used,
-            "paired_chat_messages_field": job.paired_chat_messages_field,
-            "paired_text_field": job.paired_text_field,
-            "paired_chat_template_used": paired_chat_template_used,
-            "example_ids": list(example_ids),
+            "examples": len(records) // 2,
+            "embedding_dim": embedding_tensor.shape[1],
+            "device": str(self._device),
+            "max_examples": job.max_examples,
+            "verification": {
+                "num_examples": verification["num_examples"],
+                "embedding_dim": verification["embedding_dim"],
+                "mean_std": verification["mean_std"],
+                "min_std": verification["min_std"],
+                "unique_examples": verification["unique_examples"],
+                "issues": verification["issues"],
+            },
         }
-        if paired_embeddings:
-            metadata["paired_count"] = len(paired_embeddings)
-            metadata["paired_example_ids"] = list(example_ids)
         self._storage.write_metadata(metadata_path, metadata)
 
-    def load_embeddings(self, job_id: str) -> Dict[str, torch.Tensor]:
+    def load_embeddings(self, job_id: str) -> Dict[str, Any]:
         tensor_path = self._storage.embedding_tensor_path(job_id)
         return torch.load(tensor_path, map_location="cpu")
 
-    def load_metadata(self, job_id: str) -> Dict:
+    def load_metadata(self, job_id: str) -> Dict[str, Any]:
         metadata_path = self._storage.embedding_metadata_path(job_id)
         return self._storage.read_metadata(metadata_path)
 
-    def _build_input_text(
+    def _encode_text_batch(
         self,
-        record: Dict[str, Any],
-        job: EmbeddingJobConfig,
+        model: torch.nn.Module,
         tokenizer: AutoTokenizer,
-        *,
-        chat_field: Optional[str] = None,
-        text_field: Optional[str] = None,
-    ) -> tuple[str, bool]:
-        effective_chat_field = chat_field if chat_field is not None else job.chat_messages_field
-        effective_text_field = text_field if text_field is not None else job.text_field
-        if effective_chat_field:
-            raw_messages = record.get(effective_chat_field)
-            messages = self._normalize_messages(raw_messages)
-            if not messages:
-                raise ValueError(f"Record missing chat messages field '{effective_chat_field}'")
-            if hasattr(tokenizer, "apply_chat_template"):
-                template_kwargs = job.chat_template_kwargs or {}
-                text = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=job.chat_add_generation_prompt,
-                    **template_kwargs,
-                )
-                return text, True
-            logger.warning(
-                "Tokenizer %s does not support chat templates; falling back to ad-hoc join",
-                tokenizer.__class__.__name__,
-            )
-            return self._join_messages(messages), False
+        texts: List[str],
+    ) -> torch.Tensor:
+        tokens = tokenizer(texts, return_tensors="pt", padding=True, truncation=True)
+        tokens = {name: tensor.to(self._device) for name, tensor in tokens.items()}
+        use_cuda = isinstance(self._device, str) and self._device.startswith("cuda") and torch.cuda.is_available()
+        with torch.inference_mode():
+            if use_cuda:
+                with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                    outputs = model(**tokens, output_hidden_states=True)
+            else:
+                outputs = model(**tokens, output_hidden_states=True)
+        hidden_states = outputs.hidden_states
+        if hidden_states is None:
+            raise RuntimeError("Model did not return hidden states; set output_hidden_states=True")
 
-        field = effective_text_field or job.prompt_field
-        if field is None:
-            raise ValueError("Embedding job must define either chat_messages_field or text/prompt field")
-        if field not in record:
-            raise KeyError(f"Record missing field '{field}' for embedding job {job.job_id}")
-        payload = record[field]
-        if isinstance(payload, (list, tuple)):
-            payload = "\n".join(str(item) for item in payload)
-        if not isinstance(payload, str):
-            payload = json.dumps(payload, ensure_ascii=False)
-        return payload, False
+        # Always take last layer
+        layer_tensor = hidden_states[-1]
 
-    @staticmethod
-    def _normalize_messages(raw: Any) -> Sequence[Dict[str, str]]:
-        if raw is None:
-            return []
-        if isinstance(raw, str):
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError:
-                return [{"role": "user", "content": raw}]
-            return EmbeddingCacheManager._normalize_messages(parsed)
-        if isinstance(raw, dict):
-            if "messages" in raw:
-                return EmbeddingCacheManager._normalize_messages(raw["messages"])
-            if "role" in raw and "content" in raw:
-                return [{"role": str(raw.get("role", "user")), "content": str(raw.get("content", ""))}]
-            # fallback: treat values as concatenated string
-            content = json.dumps(raw, ensure_ascii=False)
-            return [{"role": "user", "content": content}]
-        if isinstance(raw, Iterable):
-            normalized: List[Dict[str, str]] = []
-            for item in raw:
-                if isinstance(item, dict):
-                    role = str(item.get("role", "user"))
-                    content = item.get("content")
-                    if content is None and "text" in item:
-                        content = item["text"]
-                    if isinstance(content, (list, tuple)):
-                        content = "\n".join(str(x) for x in content)
-                    if content is None:
-                        content = json.dumps(item, ensure_ascii=False)
-                    normalized.append({"role": role, "content": str(content)})
-                elif isinstance(item, str):
-                    normalized.append({"role": "user", "content": item})
-                else:
-                    normalized.append({"role": "user", "content": json.dumps(item, ensure_ascii=False)})
-            return normalized
-        return []
+        # If per-token, select last non-padding/EOS token per sequence; else it's already [batch, hidden]
+        if layer_tensor.ndim == 3:
+            input_ids = tokens.get("input_ids")
+            attention_mask = tokens.get("attention_mask")
+            if input_ids is None:
+                raise RuntimeError("Tokenizer did not return input_ids; cannot select last token")
+            if attention_mask is None:
+                attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)
 
-    @staticmethod
-    def _join_messages(messages: Sequence[Dict[str, str]]) -> str:
-        lines = [f"[{msg.get('role', 'user')}]: {msg.get('content', '')}" for msg in messages]
-        return "\n".join(lines)
+            eos_token_id = getattr(tokenizer, "eos_token_id", None)
+            if eos_token_id is None:
+                is_not_eos = torch.ones_like(input_ids, dtype=torch.bool)
+            elif isinstance(eos_token_id, (list, tuple, set)):
+                is_not_eos = torch.ones_like(input_ids, dtype=torch.bool)
+                for _id in eos_token_id:
+                    is_not_eos &= (input_ids != int(_id))
+            else:
+                is_not_eos = (input_ids != int(eos_token_id))
+
+            valid_mask = attention_mask.bool() & is_not_eos
+
+            seq_len = input_ids.shape[1]
+            arange_idx = torch.arange(seq_len, device=input_ids.device).view(1, -1)
+
+            last_valid_idx = (valid_mask * arange_idx).argmax(dim=1)
+            last_nonpad_idx = (attention_mask.bool() * arange_idx).argmax(dim=1)
+            any_valid = valid_mask.any(dim=1)
+            last_idx = torch.where(any_valid, last_valid_idx, last_nonpad_idx)
+
+            gathered = layer_tensor[torch.arange(layer_tensor.shape[0], device=layer_tensor.device), last_idx]
+            cls_embeddings = gathered
+        else:
+            cls_embeddings = layer_tensor
+
+        return cls_embeddings.cpu()

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import heapq
+import json
 import logging
 import math
-from typing import Dict
+from typing import Dict, List, Optional, Sequence
 
 try:  # pragma: no cover - optional dependency
     from tqdm.auto import tqdm  # type: ignore
@@ -16,7 +18,7 @@ from ..config import SAETrainingConfig
 from ..embeddings.cache import EmbeddingCacheManager
 from ..storage import StorageManager
 from .dataset import EmbeddingTensorDataset
-from .models import BatchTopKSAE
+from .models import SparseAutoencoder
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,34 @@ class SAETrainer:
         tensor = payload["embeddings"].float()
         if tensor.numel() == 0:
             logger.warning("No embeddings found for job %s", self._job.embedding_job)
-            return {"loss": 0.0, "recon": 0.0, "l1": 0.0, "active": 0.0, "r2": 0.0, "dead_pct": 0.0}
+            return {"loss": 0.0, "recon": 0.0, "active": 0.0, "r2": 0.0, "corr": 0.0, "dead_pct": 0.0}
+        records = payload.get("records") or []
+        total_examples = tensor.shape[0]
+
+        combined_example_ids: Optional[List[int]] = None
+        combined_texts: Optional[List[Optional[str]]] = None
+        combined_sources: List[str] = []
+        if records:
+            if len(records) != total_examples:
+                logger.warning(
+                    "Record count (%s) does not match embedding rows (%s) for job %s; ignoring record metadata",
+                    len(records),
+                    total_examples,
+                    self._job.embedding_job,
+                )
+                records = []
+            else:
+                combined_example_ids = []
+                combined_texts = []
+                for entry in records:
+                    combined_sources.append(str(entry.get("choice", "chosen")))
+                    combined_example_ids.append(int(entry.get("example_index", 0)))
+                    text_value = entry.get("text")
+                    combined_texts.append(str(text_value) if text_value is not None else None)
+        if not combined_sources:
+            combined_sources = ["chosen"] * total_examples
+        if combined_texts is not None and all(text is None for text in combined_texts):
+            combined_texts = None
 
         dataset = EmbeddingTensorDataset(tensor)
         dataloader = DataLoader(dataset, batch_size=self._job.batch_size, shuffle=True, drop_last=False)
@@ -61,7 +90,36 @@ class SAETrainer:
         if steps_limit is not None:
             total_schedule_steps = min(total_schedule_steps, steps_limit)
 
-        model = BatchTopKSAE(self._input_dim, self._job.hidden_size, self._job.k_active).to(self._device)
+        model = SparseAutoencoder(
+            input_dim=self._input_dim,
+            m_total_neurons=self._job.hidden_size,
+            k_active_neurons=self._job.k_active,
+            aux_k=self._job.aux_k,
+            dead_neuron_threshold_steps=self._job.dead_neuron_threshold_steps,
+            prefix_lengths=self._job.prefix_lengths,
+            batch_topk_threshold_lr=self._job.batch_topk_threshold_lr,
+            activation=self._job.activation,
+            device=str(self._device),
+        )
+
+        # Default: initialize with K-Means centroids (clusters == hidden_size)
+        if tensor.numel() > 0:
+            logger.info(
+                "Initializing SAE with k-means (k=%d) over %d examples...",
+                self._job.hidden_size,
+                tensor.shape[0],
+            )
+            # Use a reasonably large batch for distance computations
+            kmeans_batch = max(self._job.batch_size, 8192)
+            model.initialize_weights_kmeans_(
+                tensor,
+                num_iters=50,
+                tol=1e-4,
+                batch_size=kmeans_batch,
+                seed=0,
+                kmeans_plus_plus=True,
+            )
+
         optimizer = torch.optim.Adam(model.parameters(), lr=self._job.learning_rate)
         warmup_steps = self._compute_warmup_steps(total_schedule_steps)
 
@@ -77,7 +135,6 @@ class SAETrainer:
 
             epoch_loss = 0.0
             epoch_recon = 0.0
-            epoch_l1 = 0.0
             epoch_active = 0.0
             epoch_corr_stats = self._init_corr_stats()
             num_batches = 0
@@ -90,18 +147,27 @@ class SAETrainer:
                     break
 
                 batch = batch.to(self._device)
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 self._apply_lr_schedule(optimizer, global_step, warmup_steps, total_schedule_steps)
-                recon, codes = model(batch)
-                recon_loss = torch.nn.functional.mse_loss(recon, batch)
-                sparsity_loss = codes.abs().mean()
-                loss = recon_loss + self._job.l1_coef * sparsity_loss
+                recon, info = model(batch)
+                loss = model.compute_loss(
+                    batch,
+                    recon,
+                    info,
+                    aux_coef=self._job.aux_loss_coef,
+                )
                 loss.backward()
+                model.adjust_decoder_gradient_()
+                if self._job.grad_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), self._job.grad_clip_norm)
                 optimizer.step()
+                if self._job.normalize_decoder:
+                    model.normalize_decoder_()
 
                 epoch_loss += loss.item()
-                epoch_recon += recon_loss.item()
-                epoch_l1 += sparsity_loss.item()
+                recon_loss = torch.nn.functional.mse_loss(recon, batch).item()
+                epoch_recon += recon_loss
+                codes = info["activations"].detach()
                 epoch_active += self._average_activations(codes)
                 self._accumulate_corr_stats(epoch_corr_stats, batch, recon)
                 activation_counts += (codes != 0).float().sum(dim=0)
@@ -109,7 +175,8 @@ class SAETrainer:
                 num_batches += 1
 
                 if progress is not None:
-                    progress.set_postfix({"loss": f"{loss.item():.4f}", "recon": f"{recon_loss.item():.4f}"})
+                    postfix = {"loss": f"{loss.item():.4f}", "recon": f"{recon_loss:.4f}", "threshold": f"{model.threshold.item():.2e}"}
+                    progress.set_postfix(postfix)
 
                 if self._job.checkpoint_interval and self._job.checkpoint_interval > 0 and global_step % self._job.checkpoint_interval == 0:
                     self._save_checkpoint(model)
@@ -123,16 +190,20 @@ class SAETrainer:
             completed_epochs += 1
             epoch_avg_loss = epoch_loss / num_batches
             epoch_avg_recon = epoch_recon / num_batches
-            epoch_avg_l1 = epoch_l1 / num_batches
             epoch_avg_active = epoch_active / num_batches
             epoch_corr = self._corr_from_stats(epoch_corr_stats)
-            epoch_r2 = epoch_corr * epoch_corr
+            count = epoch_corr_stats["count"]
+            ss_tot = epoch_corr_stats["x_sq_sum"] - (epoch_corr_stats["x_sum"] * epoch_corr_stats["x_sum"]) / max(count, 1.0)
+            if ss_tot <= 0.0:
+                epoch_r2 = 0.0
+            else:
+                ss_res = epoch_corr_stats["ss_res"]
+                epoch_r2 = 1.0 - ss_res / ss_tot
             dead_pct = self._dead_neuron_percent(activation_counts)
 
             epoch_metrics = {
                 "loss": epoch_avg_loss,
                 "recon": epoch_avg_recon,
-                "l1": epoch_avg_l1,
                 "active": epoch_avg_active,
                 "r2": epoch_r2,
                 "corr": epoch_corr,
@@ -144,22 +215,25 @@ class SAETrainer:
             log_metrics["epoch"] = epoch_index + 1
             log_metrics["global_step"] = global_step
             log_metrics["lr"] = optimizer.param_groups[0]["lr"]
+            log_metrics["threshold"] = float(model.threshold.item())
             self._log_wandb(log_metrics, commit=True)
             logger.info(
-                "SAE %s epoch %d/%d | loss %.4f | recon %.4f | L1 %.4f | active %.2f | dead %.2f%% | corr %.4f | R2 %.4f",
+                "SAE %s epoch %d/%d | loss %.4f | recon %.4f | active %.2f | dead %.2f%% | corr %.4f | R2 %.4f",
                 self._job.job_id,
                 epoch_index + 1,
                 planned_epochs,
                 epoch_avg_loss,
                 epoch_avg_recon,
-                epoch_avg_l1,
                 epoch_avg_active,
                 dead_pct,
                 epoch_corr,
                 epoch_r2,
             )
 
-        final_metrics = last_epoch_metrics or {"loss": 0.0, "recon": 0.0, "l1": 0.0, "active": 0.0, "r2": 0.0, "dead_pct": self._dead_neuron_percent(activation_counts)}
+        model.eval()
+        self._save_feature_examples(model, tensor, combined_example_ids, combined_texts, combined_sources)
+
+        final_metrics = last_epoch_metrics or {"loss": 0.0, "recon": 0.0, "active": 0.0, "r2": 0.0, "corr": 0.0, "dead_pct": self._dead_neuron_percent(activation_counts)}
         logger.info("SAE %s finished after %d epoch(s) and %d step(s): %s", self._job.job_id, completed_epochs, global_step, final_metrics)
 
         metadata_path = self._storage.sae_metadata_path(self._job.job_id)
@@ -168,35 +242,158 @@ class SAETrainer:
             "embedding_job": self._job.embedding_job,
             "hidden_size": self._job.hidden_size,
             "k_active": self._job.k_active,
+            "activation": self._job.activation,
             "input_dim": self._input_dim,
             "epochs": completed_epochs,
             "steps": global_step,
             "learning_rate": self._job.learning_rate,
-            "l1_coef": self._job.l1_coef,
             "warmup_steps": warmup_steps,
             "warmup_ratio": self._job.warmup_ratio,
             "min_lr_scale": self._job.min_lr_scale,
             "use_cosine_decay": self._job.use_cosine_decay,
+            "batch_topk_threshold_lr": self._job.batch_topk_threshold_lr,
+            "aux_k": self._job.aux_k,
+            "aux_loss_coef": self._job.aux_loss_coef,
+            "dead_neuron_threshold_steps": self._job.dead_neuron_threshold_steps,
+            "prefix_lengths": self._job.prefix_lengths,
+            "grad_clip_norm": self._job.grad_clip_norm,
+            "normalize_decoder": self._job.normalize_decoder,
             "dead_neuron_percent": final_metrics.get("dead_pct", 0.0),
+            "threshold": float(model.threshold.item()),
             "metrics": final_metrics,
         })
         summary_metrics = dict(final_metrics)
         summary_metrics["step"] = global_step
         summary_metrics["epoch"] = completed_epochs
+        summary_metrics["threshold"] = float(model.threshold.item())
         self._log_wandb(summary_metrics, commit=True)
         self._finish_wandb()
         return final_metrics
 
-    def _save_checkpoint(self, model: BatchTopKSAE) -> None:
+    def _save_checkpoint(self, model: SparseAutoencoder) -> None:
         path = self._storage.sae_checkpoint_path(self._job.job_id)
         payload = {
             "state_dict": model.state_dict(),
             "input_dim": self._input_dim,
             "hidden_dim": self._job.hidden_size,
             "k_active": self._job.k_active,
+            "activation": self._job.activation,
+            "batch_topk_threshold_lr": self._job.batch_topk_threshold_lr,
+            "aux_k": self._job.aux_k,
+            "dead_neuron_threshold_steps": self._job.dead_neuron_threshold_steps,
+            "prefix_lengths": self._job.prefix_lengths,
         }
         torch.save(payload, path)
         logger.debug("Saved SAE checkpoint to %s", path)
+
+    def _save_feature_examples(
+        self,
+        model: SparseAutoencoder,
+        embeddings: torch.Tensor,
+        example_ids: Optional[Sequence[int]],
+        texts: Optional[Sequence[Optional[str]]],
+        sources: Optional[Sequence[str]],
+    ) -> None:
+        top_k = max(0, self._job.top_k_feature_examples)
+        if top_k == 0 or embeddings.numel() == 0:
+            return
+
+        heaps: List[List[tuple[float, int, Dict[str, object]]]] = [[] for _ in range(model.encoder.out_features)]
+        batch_size = max(1, self._job.batch_size)
+        effective_ids: Optional[List[object]] = None
+        if example_ids is not None:
+            effective_ids = []
+            for idx in example_ids:
+                if isinstance(idx, torch.Tensor):
+                    if idx.numel() == 1:
+                        effective_ids.append(idx.item())
+                    else:
+                        effective_ids.append(idx.detach().cpu().tolist())
+                else:
+                    effective_ids.append(idx)
+        effective_texts: Optional[List[Optional[str]]] = list(texts) if texts is not None else None
+        if effective_texts is not None:
+            effective_texts = [str(text) if text is not None else None for text in effective_texts]
+        effective_sources: Optional[List[str]] = list(sources) if sources is not None else None
+        if effective_sources is not None:
+            effective_sources = [str(source) for source in effective_sources]
+        decoder_weights = model.decoder.weight.detach().cpu()
+        decoder_column_norms = decoder_weights.norm(dim=0)
+
+        with torch.no_grad():
+            for start in range(0, embeddings.shape[0], batch_size):
+                end = min(start + batch_size, embeddings.shape[0])
+                batch = embeddings[start:end].to(self._device)
+                pre_activations, codes = model.encode(batch, training=False)
+                codes_cpu = codes.cpu()
+                pre_cpu = pre_activations.cpu()
+                for row_idx in range(codes_cpu.shape[0]):
+                    example_pos = start + row_idx
+                    example_identifier: object = example_pos
+                    if effective_ids is not None and example_pos < len(effective_ids):
+                        example_identifier = effective_ids[example_pos]
+                    text_value: Optional[str] = None
+                    if effective_texts is not None and example_pos < len(effective_texts):
+                        candidate = effective_texts[example_pos]
+                        text_value = candidate if candidate is not None else None
+                    source_value: Optional[str] = None
+                    if effective_sources is not None and example_pos < len(effective_sources):
+                        source_value = effective_sources[example_pos]
+                    row = codes_cpu[row_idx]
+                    pre_row = pre_cpu[row_idx]
+                    row_norm = float(row.norm(p=2).item())
+                    active_indices = row.nonzero(as_tuple=False).view(-1)
+                    for feature_idx in active_indices.tolist():
+                        value = float(row[feature_idx].item())
+                        if value <= 0.0:
+                            continue
+                        pre_value = float(pre_row[feature_idx].item())
+                        relative = float(value / row_norm) if row_norm > 0.0 else 0.0
+                        decoder_norm = float(decoder_column_norms[feature_idx].item())
+                        decoder_scaled = float(value * decoder_norm)
+                        entry: Dict[str, object] = {
+                            "example_id": example_identifier,
+                            "activation": float(value),
+                            "pre_activation": float(pre_value),
+                            "relative_activation": float(relative),
+                            "code_l2_norm": float(row_norm),
+                            "dataset_index": int(example_pos),
+                            "decoder_column_norm": float(decoder_norm),
+                            "decoder_scaled_activation": float(decoder_scaled),
+                        }
+                        if text_value is not None:
+                            entry["text"] = text_value
+                        if source_value is not None:
+                            entry["source"] = source_value
+                        heap = heaps[feature_idx]
+                        item = (value, example_pos, entry)
+                        if len(heap) < top_k:
+                            heapq.heappush(heap, item)
+                        elif value > heap[0][0]:
+                            heapq.heapreplace(heap, item)
+
+        examples_path = self._storage.sae_feature_examples_path(self._job.job_id)
+        examples_path.parent.mkdir(parents=True, exist_ok=True)
+        examples: Dict[str, List[Dict[str, object]]] = {}
+        for feature_idx, heap in enumerate(heaps):
+            if not heap:
+                # Ensure a key exists for every feature even if no examples (empty list)
+                examples[str(feature_idx)] = []
+                continue
+            sorted_entries = sorted(heap, key=lambda pair: (-pair[0], pair[1]))
+            feature_examples = [entry for _, _, entry in sorted_entries]
+            examples[str(feature_idx)] = feature_examples
+
+        # Redundant safety: include empty lists for any features not covered above
+        total_features = model.encoder.out_features
+        for feature_idx in range(total_features):
+            key = str(feature_idx)
+            if key not in examples:
+                examples[key] = []
+
+        with examples_path.open("w", encoding="utf-8") as handle:
+            json.dump(examples, handle, indent=2, sort_keys=True)
+        logger.info("Saved top activations for SAE %s to %s", self._job.job_id, examples_path)
 
     def _compute_warmup_steps(self, total_steps: int) -> int:
         if total_steps <= 1:
@@ -247,6 +444,7 @@ class SAETrainer:
             "x_sq_sum": 0.0,
             "y_sq_sum": 0.0,
             "xy_sum": 0.0,
+            "ss_res": 0.0,
         }
 
     def _accumulate_corr_stats(self, stats: Dict[str, float], target: torch.Tensor, reconstruction: torch.Tensor) -> None:
@@ -259,6 +457,8 @@ class SAETrainer:
             stats["x_sq_sum"] += float(torch.sum(x * x, dtype=torch.float64).item())
             stats["y_sq_sum"] += float(torch.sum(y * y, dtype=torch.float64).item())
             stats["xy_sum"] += float(torch.sum(x * y, dtype=torch.float64).item())
+            diff = x - y
+            stats["ss_res"] += float(torch.sum(diff * diff, dtype=torch.float64).item())
 
     def _corr_from_stats(self, stats: Dict[str, float]) -> float:
         n = stats["count"]
@@ -297,7 +497,6 @@ class SAETrainer:
                 "steps": self._job.steps,
                 "epochs": self._job.epochs,
                 "batch_size": self._job.batch_size,
-                "l1_coef": self._job.l1_coef,
             },
             reinit=True,
         )

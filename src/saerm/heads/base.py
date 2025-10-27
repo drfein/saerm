@@ -3,6 +3,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 from typing import Any, Dict, Type
+import inspect
 
 import joblib
 import numpy as np
@@ -40,7 +41,18 @@ class HeadFactory:
     def create(cls, name: str, **kwargs: Any) -> PredictionHead:
         if name not in cls._registry:
             raise KeyError(f"Unknown head type {name}")
-        return cls._registry[name](**kwargs)
+        head_cls = cls._registry[name]
+        try:
+            sig = inspect.signature(head_cls.__init__)
+            allowed = {
+                param_name
+                for param_name, param in sig.parameters.items()
+                if param_name != "self" and param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            }
+            filtered = {k: v for k, v in kwargs.items() if k in allowed}
+        except Exception:
+            filtered = kwargs
+        return head_cls(**filtered)
 
     @classmethod
     def load(cls, name: str, path: str) -> PredictionHead:

@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 
 import torch
 
-from .models import BatchTopKSAE
+from .models import SparseAutoencoder
 
 
 class SAEFeatureExtractor:
@@ -30,7 +30,23 @@ class SAEFeatureExtractor:
         if inferred_input is None or inferred_hidden is None or inferred_k is None:
             raise ValueError("Checkpoint does not contain sufficient metadata to instantiate the SAE")
 
-        self._model = BatchTopKSAE(inferred_input, inferred_hidden, inferred_k)
+        activation = meta.get("activation", "topk")
+        batch_topk_threshold_lr = meta.get("batch_topk_threshold_lr", 1e-2)
+        aux_k = meta.get("aux_k")
+        dead_neuron_threshold_steps = meta.get("dead_neuron_threshold_steps", 256)
+        prefix_lengths = meta.get("prefix_lengths")
+
+        self._model = SparseAutoencoder(
+            input_dim=inferred_input,
+            m_total_neurons=inferred_hidden,
+            k_active_neurons=inferred_k,
+            aux_k=aux_k,
+            dead_neuron_threshold_steps=dead_neuron_threshold_steps,
+            prefix_lengths=prefix_lengths,
+            batch_topk_threshold_lr=batch_topk_threshold_lr,
+            activation=activation,
+            device=str(self._device),
+        )
         self._model.load_state_dict(state_dict)
         self._model.to(self._device)
         self._model.eval()
@@ -40,8 +56,8 @@ class SAEFeatureExtractor:
         with torch.no_grad():
             for idx in range(0, tensor.shape[0], batch_size):
                 batch = tensor[idx: idx + batch_size].to(self._device)
-                _, codes = self._model(batch)
-                outputs.append(codes.cpu())
+                _, info = self._model(batch)
+                outputs.append(info["activations"].cpu())
         return torch.cat(outputs, dim=0)
 
 

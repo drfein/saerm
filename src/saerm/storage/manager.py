@@ -45,6 +45,17 @@ class StorageManager:
     def sae_metadata_path(self, job_id: str) -> Path:
         return self.sae_dir(job_id) / "metadata.json"
 
+    def sae_feature_examples_path(self, job_id: str) -> Path:
+        return self.sae_dir(job_id) / "feature_examples.json"
+
+    def sae_autointerp_path(self, sae_job_id: str, autointerp_job_id: str) -> Path:
+        slug = slugify([autointerp_job_id])
+        return self.sae_dir(sae_job_id) / f"autointerp_{slug}.json"
+
+    def sae_autointerp_summary_path(self, sae_job_id: str, autointerp_job_id: str) -> Path:
+        slug = slugify([autointerp_job_id])
+        return self.sae_dir(sae_job_id) / f"autointerp_{slug}_summary.json"
+
     # Heads ----------------------------------------------------------------------
 
     def head_dir(self, job_id: str) -> Path:

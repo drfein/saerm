@@ -3,7 +3,14 @@ from __future__ import annotations
 import logging
 from typing import Iterable
 
-from ..config import EmbeddingJobConfig, ExperimentConfig, HeadTrainingConfig, SAETrainingConfig
+from ..autointerp import AutoInterpreter
+from ..config import (
+    AutoInterpJobConfig,
+    EmbeddingJobConfig,
+    ExperimentConfig,
+    HeadTrainingConfig,
+    SAETrainingConfig,
+)
 from ..data.datasets import DatasetManager
 from ..embeddings.cache import EmbeddingCacheManager
 from ..heads.trainer import HeadTrainer
@@ -29,6 +36,7 @@ class ExperimentRunner:
         self.run_embedding_jobs(self._config.embedding_jobs)
         self.run_sae_jobs(self._config.sae_jobs)
         self.run_head_jobs(self._config.head_jobs)
+        self.run_autointerp_jobs(self._config.autointerp_jobs)
 
     def run_embedding_jobs(self, jobs: Iterable[EmbeddingJobConfig]) -> None:
         for job in jobs:
@@ -44,3 +52,13 @@ class ExperimentRunner:
         for job in jobs:
             trainer = HeadTrainer(self._storage, self._cache, self._datasets, job)
             trainer.train()
+
+    def run_autointerp_jobs(self, jobs: Iterable[AutoInterpJobConfig]) -> None:
+        for job in jobs:
+            interpreter = AutoInterpreter(
+                self._storage,
+                job,
+                config=self._config,
+                dataset_manager=self._datasets,
+            )
+            interpreter.run()

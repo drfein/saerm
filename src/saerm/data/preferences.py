@@ -1,32 +1,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Iterator, List, Optional
+from typing import Any, Iterator, List
 
 from datasets import Dataset, IterableDataset
 
 
 @dataclass
 class PreferencePair:
-    prompt: str
-    chosen: str
-    rejected: str
-    metadata: Dict[str, str]
+    dataset: str
+    chosen: List[dict]
+    rejected: List[dict]
 
 
 def iter_preference_pairs(
     dataset: Dataset | IterableDataset,
-    prompt_field: str = "prompt",
+    dataset_name: str,
     chosen_field: str = "chosen",
     rejected_field: str = "rejected",
-    metadata_fields: Optional[List[str]] = None,
 ) -> Iterator[PreferencePair]:
-    metadata_fields = metadata_fields or []
     for row in dataset:
-        metadata = {field: row[field] for field in metadata_fields if field in row}
         yield PreferencePair(
-            prompt=row[prompt_field],
-            chosen=row[chosen_field],
-            rejected=row[rejected_field],
-            metadata=metadata,
+            dataset=dataset_name,
+            chosen=_ensure_messages(row[chosen_field]),
+            rejected=_ensure_messages(row[rejected_field]),
         )
+
+
+def _ensure_messages(value: Any) -> List[dict]:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return [value]
+    return [{"role": "assistant", "content": str(value)}]

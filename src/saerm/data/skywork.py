@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Iterator
 
 from datasets import Dataset, IterableDataset
 
-from .preferences import PreferencePair
+from .preferences import PreferencePair, _ensure_messages
 
 
 @dataclass
 class SkyworkFields:
-    prompt: str = "prompt"
+    dataset: str = "skywork"
     chosen: str = "chosen"
     rejected: str = "rejected"
-    metadata: tuple[str, ...] = ("category", "source")
 
 
 def iter_skywork_pairs(
@@ -22,10 +21,8 @@ def iter_skywork_pairs(
 ) -> Iterator[PreferencePair]:
     mapping = fields or SkyworkFields()
     for row in dataset:
-        metadata = {field: row[field] for field in mapping.metadata if field in row}
         yield PreferencePair(
-            prompt=row[mapping.prompt],
-            chosen=row[mapping.chosen],
-            rejected=row[mapping.rejected],
-            metadata=metadata,
+            dataset=mapping.dataset,
+            chosen=_ensure_messages(row[mapping.chosen]),
+            rejected=_ensure_messages(row[mapping.rejected]),
         )
