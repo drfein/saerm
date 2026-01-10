@@ -1,0 +1,29 @@
+# Sycophancy bias experiment configuration
+# Tests user opinion sycophancy using PlausibleQA on SHP-Qwen3
+
+name: sycophancy_shp_qwen3_plausibleqa
+bias_type: sycophancy
+
+# Model settings
+model_path: /nlp/scr/drfein/saerm/reward_models/shp-qwen3-rm/checkpoint-20982
+trust_remote_code: true
+
+# Dataset settings
+dataset_source: /sailhome/drfein/saerm/data/plausibleqa.json
+dataset_class: sycophancy_plausibleqa
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+
+# Evaluation settings
+null_alpha: 1.0
+batch_size: 8
+max_length: 2048
+device: cuda
+
+# Output settings
+save_probe: true
+
+extra: {}
+
+

@@ -1,0 +1,32 @@
+# Sycophancy bias experiment configuration
+# Tests user opinion sycophancy on Gemma with GSM8K-MC
+
+name: sycophancy_gemma_gsm8k_mc
+bias_type: sycophancy
+
+# Model settings
+model_path: Ray2333/GRM-gemma2-2B-rewardmodel-ft
+trust_remote_code: true
+
+# Dataset settings
+dataset_source: guipenedo/gsm8k-mc
+dataset_class: sycophancy_mcq
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+
+# Evaluation settings
+null_alpha: 1.0
+batch_size: 8
+max_length: 2048
+device: cuda
+
+# Output settings
+save_probe: true
+
+extra:
+  dataset_id: guipenedo/gsm8k-mc
+  train_split: train
+  eval_split: test
+
+

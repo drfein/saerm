@@ -1,0 +1,32 @@
+# Uncertainty bias experiment configuration
+# Tests hedging/uncertainty handling on Skywork with GSM8K-MC
+
+name: uncertainty_skywork_gsm8k_mc
+bias_type: uncertainty
+
+# Model settings
+model_path: Skywork/Skywork-Reward-V2-Llama-3.1-8B
+trust_remote_code: true
+
+# Dataset settings
+dataset_source: guipenedo/gsm8k-mc
+dataset_class: uncertainty_mcq
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+
+# Evaluation settings
+null_alpha: 1.0
+batch_size: 8
+max_length: 2048
+device: cuda
+
+# Output settings
+save_probe: true
+
+extra:
+  dataset_id: guipenedo/gsm8k-mc
+  train_split: train
+  eval_split: test
+
+

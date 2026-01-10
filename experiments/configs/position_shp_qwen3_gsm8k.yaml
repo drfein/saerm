@@ -1,0 +1,32 @@
+# Position bias experiment configuration
+# Tests MCQ position bias on SHP-Qwen3 with GSM8K-MC
+
+name: position_shp_qwen3_gsm8k
+bias_type: position
+
+# Model settings
+model_path: /nlp/scr/drfein/saerm/reward_models/shp-qwen3-rm/checkpoint-20982
+trust_remote_code: true
+
+# Dataset settings
+# GSM8K-MC: multiple choice math questions from guipenedo/gsm8k-mc
+dataset_source: guipenedo/gsm8k-mc
+probe_size: 500
+max_test_examples: null  # Use full test set
+split_seed: 42
+
+# Evaluation settings
+null_alpha: 1.0
+batch_size: 4
+max_length: 2048
+device: cuda
+
+# Output settings
+save_probe: true
+
+# Dataset-specific settings
+extra:
+  dataset_id: guipenedo/gsm8k-mc
+  train_split: train  # Use train for probe building
+  eval_split: test    # Use test for evaluation
+

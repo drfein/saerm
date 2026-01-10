@@ -1,0 +1,111 @@
+# Shared model registry for all experiments
+# Each model is tested across all bias types and datasets
+
+models:
+  - name: skywork
+    path: Skywork/Skywork-Reward-V2-Llama-3.1-8B
+    trust_remote_code: true
+
+  - name: allen
+    path: allenai/Llama-3.1-8B-Instruct-RM-RB2
+    trust_remote_code: true
+
+  - name: skywork_qwen3
+    path: Skywork/Skywork-Reward-V2-Qwen3-8B
+    trust_remote_code: true
+
+  - name: skywork_qwen-smallest
+    path: Skywork/Skywork-Reward-V2-Qwen3-0.6B
+    trust_remote_code: true
+
+  - name: deberta
+    path: OpenAssistant/reward-model-deberta-v3-large-v2
+    trust_remote_code: false
+    pair_format: true  # Uses tokenizer(question, answer) instead of chat template
+
+
+datasets:
+  sycophancy:
+    - name: gsm8k_mc
+      source: guipenedo/gsm8k-mc
+      description: GSM8K-MC converted to sycophancy format
+      extra:
+        format: mcq
+        dataset_id: guipenedo/gsm8k-mc
+        eval_split: train
+        
+    - name: mmlu
+      source: cais/mmlu
+      description: MMLU converted to sycophancy format
+      extra:
+        format: mcq
+        dataset_id: cais/mmlu
+        eval_split: test
+        subset: all
+        
+    - name: bigbench
+      source: tasksource/bigbench
+      description: BIG-bench (18 MCQ tasks); probe from validation, eval on train
+      extra:
+        dataset_class: sycophancy_bigbench
+        
+    - name: plausibleqa
+      source: /sailhome/drfein/saerm/data/plausibleqa.json
+      description: PlausibleQA with plausibility-scored distractors
+      extra:
+        dataset_class: sycophancy_plausibleqa
+      
+  uncertainty:
+    - name: gsm8k_mc
+      source: guipenedo/gsm8k-mc
+      description: GSM8K-MC (uniform plausibility for distractors)
+      extra:
+        format: mcq
+        dataset_id: guipenedo/gsm8k-mc
+        eval_split: test
+        
+    - name: mmlu
+      source: cais/mmlu
+      description: MMLU (uniform plausibility for distractors)
+      extra:
+        format: mcq
+        dataset_id: cais/mmlu
+        eval_split: test
+        subset: all
+        
+    - name: bigbench
+      source: tasksource/bigbench
+      description: BIG-bench (18 MCQ tasks); probe from validation, eval on train
+      extra:
+        dataset_class: uncertainty_bigbench
+        
+    - name: plausibleqa
+      source: /sailhome/drfein/saerm/data/plausibleqa.json
+      description: PlausibleQA with plausibility-scored distractors
+      extra:
+        dataset_class: uncertainty
+        split: train
+        
+  position:
+    - name: gsm8k_mc
+      source: guipenedo/gsm8k-mc
+      description: GSM8K multiple choice math (A/B/C/D format)
+      extra:
+        dataset_id: guipenedo/gsm8k-mc
+        train_split: train
+        eval_split: test
+        
+    - name: mmlu
+      source: cais/mmlu
+      description: MMLU multiple choice across subjects (A/B/C/D format)
+      extra:
+        dataset_id: cais/mmlu
+        train_split: auxiliary_train
+        eval_split: test
+        subset: all
+        
+    - name: plausibleqa
+      source: /sailhome/drfein/saerm/data/plausibleqa.json
+      description: PlausibleQA binary position bias (A vs B)
+      extra:
+        dataset_class: position_plausibleqa

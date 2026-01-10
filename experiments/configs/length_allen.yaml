@@ -1,0 +1,26 @@
+# Length bias (verbosity) experiment on Allen RM
+name: length_allen
+bias_type: length
+
+# Model settings
+model_path: allenai/Llama-3.1-8B-Instruct-RM-RB2
+trust_remote_code: true
+
+# Dataset settings
+dataset_source: /sailhome/drfein/saerm/data/gsm8k_soln.json
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+
+# Evaluation settings
+null_alpha: 1.0
+batch_size: 4
+max_length: 1024
+device: cuda
+
+# Output settings
+save_probe: true
+
+extra: {}
+
+

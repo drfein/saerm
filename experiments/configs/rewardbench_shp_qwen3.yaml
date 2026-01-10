@@ -1,0 +1,27 @@
+# RewardBench evaluation on SHP-Qwen3 RM
+name: rewardbench_shp_qwen3
+bias_type: rewardbench
+
+# Model settings
+model_path: /nlp/scr/drfein/saerm/reward_models/shp-qwen3-rm/checkpoint-20982
+trust_remote_code: true
+
+# Dataset settings
+dataset_source: allenai/reward-bench-2
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+
+# Evaluation settings
+null_alpha: 1.0
+batch_size: 8
+max_length: 2048
+device: cuda
+
+# Output settings
+save_probe: true
+
+extra:
+  split: test
+
+

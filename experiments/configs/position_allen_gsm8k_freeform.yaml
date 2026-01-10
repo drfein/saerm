@@ -1,0 +1,35 @@
+# Position bias experiment on GSM8K (freeform listing)
+# Tests "first vs last" bias: does accuracy differ when correct answer is listed first vs last?
+# Prompt: "The answer is either {a}, {b}, {c}, or {d}."
+# Response: "The answer is {X}."
+
+name: position_allen_gsm8k_freeform
+bias_type: position
+
+# Model settings
+model_path: allenai/Llama-3.1-8B-Instruct-RM-RB2
+trust_remote_code: true
+
+# Dataset settings
+dataset_source: guipenedo/gsm8k-mc
+dataset_class: position_freeform
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+
+# Evaluation settings
+null_alpha: 1.0
+batch_size: 4
+max_length: 2048
+device: cuda
+
+# Output settings
+raw_data_dir: /nlp/scr/drfein/nullbias
+save_probe: true
+
+extra:
+  dataset_id: guipenedo/gsm8k-mc
+  train_split: train
+  eval_split: test
+
+

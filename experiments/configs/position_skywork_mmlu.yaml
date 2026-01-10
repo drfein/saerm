@@ -1,0 +1,34 @@
+# Position bias experiment configuration
+# Tests MCQ position bias on Skywork with MMLU
+
+name: position_skywork_mmlu
+bias_type: position
+
+# Model settings
+model_path: Skywork/Skywork-Reward-V2-Llama-3.1-8B
+trust_remote_code: true
+
+# Dataset settings
+dataset_source: cais/mmlu
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+
+# Evaluation settings
+null_alpha: 1.0
+batch_size: 4
+max_length: 2048
+device: cuda
+
+# Output settings
+save_probe: true
+
+extra:
+  dataset_id: cais/mmlu
+  train_split: auxiliary_train
+  eval_split: test
+  subset: all
+
+
+
+

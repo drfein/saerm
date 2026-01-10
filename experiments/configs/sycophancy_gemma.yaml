@@ -1,0 +1,28 @@
+# Sycophancy bias experiment configuration
+# Tests user opinion sycophancy on Gemma reward model
+
+name: sycophancy_gemma
+bias_type: sycophancy
+
+# Model settings
+model_path: weqweasdas/RM-Gemma-2B
+trust_remote_code: true
+
+# Dataset settings
+# Uses preference pairs with user opinions
+dataset_source: sycophancy/data/sycophancy_preferences.jsonl
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+
+# Evaluation settings
+null_alpha: 1.0
+batch_size: 4
+max_length: 1024
+device: cuda
+
+# Output settings
+save_probe: true
+
+extra: {}
+

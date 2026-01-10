@@ -1,0 +1,30 @@
+# Sycophancy bias experiment configuration
+# Tests user opinion sycophancy using PlausibleQA dataset
+
+name: sycophancy_allen_plausibleqa
+bias_type: sycophancy
+
+# Model settings
+model_path: allenai/Llama-3.1-8B-Instruct-RM-RB2
+trust_remote_code: true
+
+# Dataset settings
+dataset_source: /sailhome/drfein/saerm/data/plausibleqa.json
+dataset_class: sycophancy_plausibleqa
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+
+# Evaluation settings
+null_alpha: 1.0
+batch_size: 4
+max_length: 2048
+device: cuda
+
+# Output settings
+raw_data_dir: /nlp/scr/drfein/nullbias
+save_probe: true
+
+extra: {}
+
+
