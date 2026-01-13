@@ -31,11 +31,11 @@ Q2: Double check: Evidence for using same model actually improves RLHF, which is
     This is a pretty direct confirmation of the phenomenon, but better framed as “same lineage/starting point” rather than “same exact model.”
 
 Q3: Is looking for a "privileged reward" a reasonable idea to begin with?
-    Better framed as in-distribution advantage + inherited inductive biases (privelege could sound intentional?) "Does the RM's score depend on similarity-to-base-model after controlling for actual human preference/quality?"   
+    Better framed as in-distribution advantage + inherited inductive biases (privelege could sound intentional?) "Does the RM's score depend on similarity-to-base-model after controlling for actual human preference/quality?"
     We also observe a lot of interesting quirks for models based on which base model was used in our experiments, e.g., which bsae model is better in math seems to be inherited by RM model. [CHECK]
     In short, yes.
     Reason against: Practially speaking, if you are training a product-ready language model, you probably already have a base model and a preference dataset and will just use that anyways. Main reason thus remains for general open source community and using RMs for other purposes (guide RL red-teaming)
-    
+
 Q4: What is a good metric to use to measure similarity? Perplexity, KL, embedding cosine?
     Perplexity can work well, BUT, it also measures "genericness" of sequences and can differ between models/tokenizers and it also does not exclusively measure how "model-like" a sequence is
     first, normalize: for a promt x and compeltion y
@@ -53,13 +53,13 @@ Q4: What is a good metric to use to measure similarity? Perplexity, KL, embeddin
 Q5: Assuming we find a correlation, what would this imply? Is it the "in-distribution advantage + inherited inductive biases" effect we want or could it also imply something else? Would it be sufficient to justify our hypothesis?
     --> This analysis will only work if models are generally capable. If they are not, then the perplexity and reward differences may just reflect general capability differences rather than similarity to base model.
     --> Correlation could be produced if one of the models (base) was used to generate synthetic data for RM, so it learns that style would be on-distirbutions. I think we can still say this is bad.
-    --> Need to look out for confounding factors like length/verbosity, refusal style/format, general formatting, difficulty of topic, tokenizer-specifics (negligble here?), biased panel. 
+    --> Need to look out for confounding factors like length/verbosity, refusal style/format, general formatting, difficulty of topic, tokenizer-specifics (negligble here?), biased panel.
 
     Claims that could be made:
     - RLHF will partially optimzie toward base-family style/anifold features or produce less helpful rewards to guide RLHF, potentially explaining observation
     - RM performance evals could be contaminated and results depend on which model you use to construct synthetic dataset
 
-Q6: Is model selection sufficient? 
+Q6: Is model selection sufficient?
     Consider adding base models to remove "instruction" part of perplexity?
 
 Q7: What dataset to use here? What model generations can or must be included in the dataset?
@@ -87,7 +87,7 @@ Todo:
     - Do I need to normalize RM scores? I don't think so, as I am only picking "largest correlation" for each RM independently, right?
     - Potentially add color to scatter dots depending on response token/byte length?
 - Profit, hopefully
-""" 
+"""
 
 from __future__ import annotations
 
@@ -145,7 +145,7 @@ class PerplexityEvaluator:
             dtype: torch.dtype = torch.bfloat16,
             trust_remote_code: bool = False,
         ):
-        
+
         handle = None
         # Need this?
         quant_cfg = None
@@ -175,7 +175,7 @@ class PerplexityEvaluator:
             handle = ModelHandle(model_id, model, tok, is_processor=False)
 
         return handle
-    
+
 ##
     @staticmethod
     def split_messages_for_scoring(messages):
@@ -199,7 +199,7 @@ class PerplexityEvaluator:
         prompt_messages = messages[:last_asst_idx]
         full_messages = messages[: last_asst_idx + 1]
         completion_text = messages[last_asst_idx].get("content", "")
-        
+
         return prompt_messages, full_messages, completion_text
 
     def _encode_text(self, handle: ModelHandle, text: str):
@@ -224,6 +224,7 @@ class PerplexityEvaluator:
             tokenize=False,                 # IMPORTANT: always string
             add_generation_prompt=add_generation_prompt,
         )
+
     def _encode_prompt_and_full(self, handle: ModelHandle, prompt, completion, use_chat_template: bool = True):
         """
         Returns: input_ids, attention_mask, prompt_len, completion_text
@@ -277,7 +278,7 @@ class PerplexityEvaluator:
         full_ids, attn = self._encode_text(handle, full_text)
         prompt_len = prompt_ids.shape[1]
         return full_ids, attn, prompt_len, completion_text
-
+    
     # FIXME: Not Boundary save FML
     # @torch.inference_mode()
     # def calculate_completion_perplexity(
@@ -400,6 +401,7 @@ def batch_score_last_assistant(
         tok = handle.tok
 
     results = []
+    MAX_ns = 0
 
     def _join_fallback(msg_list):
         # Keep some separators to reduce boundary merges in fallback mode
@@ -417,17 +419,19 @@ def batch_score_last_assistant(
         completion_text = completion_text or ""
 
         if use_chat_template and hasattr(tok, "apply_chat_template"):
+            # , enable_thinking=False add here for Qwen3
             prompt_text = tok.apply_chat_template(prompt_msgs, tokenize=False, add_generation_prompt=True)
             full_text = tok.apply_chat_template(full_msgs, tokenize=False, add_generation_prompt=False)
         else:
             prompt_text = _join_fallback(prompt_msgs)
             full_text = _join_fallback(full_msgs)
 
-        # Find where the completion appears inside the full text (from the end).
-        # This avoids needing separate prompt tokenization lengths.
-        comp_start = full_text.rfind(completion_text) if completion_text != "" else -1
+        # Completion span is exactly the suffix added when going from prompt_text -> full_text.
+        # This avoids rfind() ambiguity when completion_text appears multiple times.
+        comp_start = len(prompt_text)
+        comp_end = len(full_text)
 
-        return full_text, completion_text, comp_start
+        return full_text, completion_text, comp_start, comp_end
 
     # Mini-batch loop
     for start in range(0, len(conversations), batch_size):
@@ -436,11 +440,13 @@ def batch_score_last_assistant(
         full_texts = []
         completion_texts = []
         comp_starts = []
+        comp_ends = []
         for msgs in batch:
-            ftxt, ctxt, cstart = to_full_text_and_completion(msgs)
+            ftxt, ctxt, cstart, cend = to_full_text_and_completion(msgs)
             full_texts.append(ftxt)
             completion_texts.append(ctxt)
             comp_starts.append(cstart)
+            comp_ends.append(cend)
 
         # Tokenize with offsets (fast tokenizer required)
         try:
@@ -469,14 +475,14 @@ def batch_score_last_assistant(
         # We'll detect this by checking if any token offsets overlap the completion span.
         for i in range(input_ids.size(0)):
             cstart = comp_starts[i]
+            cend = comp_ends[i]
             ctxt = completion_texts[i] or ""
-            cend = cstart + len(ctxt) if (cstart is not None and cstart >= 0) else None
 
             # Default: mask everything (=> returns NaNs below)
             labels[i, :] = -100
 
-            # If we can't find completion text in full_text (or completion empty), mark as NaN case
-            if cstart is None or cstart < 0 or cend is None or len(ctxt) == 0:
+            # If completion empty, mark as NaN case
+            if ctxt is None or len(ctxt) == 0:
                 continue
 
             # Unmask tokens whose offsets overlap the completion span.
@@ -553,6 +559,9 @@ def batch_score_last_assistant(
                         },
                     }
                 )
+            if ns > MAX_ns:
+                MAX_ns = ns
+    print(MAX_ns)
 
     return results
 
@@ -566,55 +575,28 @@ def flatten_result(res: dict) -> dict:
     return out
 
 
-# def main():
-#     data = load_dataset_local("allenai/tulu-3-wildchat-reused-on-policy-8b")
-#     MODEL_IDS = [
-#         # "google/gemma-3-12b-it",
-#         # "google/gemma-2-9b-it",
-#         # "meta-llama/Llama-2-7b-chat-hf",
-#         # "meta-llama/Llama-3.1-8B-Instruct",
-#         # "Qwen/Qwen3-8B",
-#         # "Qwen/Qwen3-0.6B",
-#         # "Qwen/Qwen2.5-7B-Instruct",
-#         "Qwen/Qwen2.5-0.5B-Instruct",
-#     ]
-
-    
-#     for m in tqdm(MODEL_IDS, desc="Models"):
-#         evaluator = PerplexityEvaluator(m)
-#         print(f"Loaded model {m}")
-        
-#         # Single eval
-#         # for d_i in tqdm(range(3), desc="Samples", leave=False):
-#         #     row = data[d_i]
-#         #     print(row)
-
-#         #     res_chosen = evaluator.calculate_completion_perplexity(prompt=None, completion=row["chosen"], use_chat_template=True)
-#         #     res_rejected = evaluator.calculate_completion_perplexity(prompt=None, completion=row["rejected"], use_chat_template=True)
-
-#         #     print("chosen ppl:", res_chosen)
-#         #     print("rejected ppl:", res_rejected)
-
-#         # Batch eval
-#         row0 = data[0]
-#         row1 = data[1]
-#         convs = [row0["chosen"], row0["rejected"], row1["chosen"], row1["rejected"]]
-#         out = batch_score_last_assistant(evaluator, convs, batch_size=4)
-#         for o in out:
-#             print(o)
-
 def main():
     data = load_dataset_local("allenai/tulu-3-wildchat-reused-on-policy-8b")
 
     # FIXME pass enable_thinking=False into apply_chat_template calls for Qwen3?
     MODEL_IDS = [
-        "Qwen/Qwen2.5-0.5B-Instruct",
+        # "meta-llama/Llama-2-13b-chat-hf",
+        # "meta-llama/Llama-2-7b-chat-hf",
+        # "meta-llama/Llama-3.1-8B-Instruct",  
+        # "Qwen/Qwen2.5-0.5B-Instruct",
+        # "Qwen/Qwen3-8B",   # rerun with enable_thinking=False                    
+        # "Qwen/Qwen3-0.6B", # rerun with enable_thinking=False                    
+        # "Qwen/Qwen2.5-7B-Instruct", 
+        # "google/gemma-2-9b-it",
+        # "google/gemma-2-2b-it",
+        "google/gemma-2-27b-it",
+        # "google/gemma-3-12b-it",
     ]
 
     # how many dataset rows you want to score
-    N = 10  # change as needed
-    batch_rows = 10  # number of dataset examples per batch (each yields 2 convs)
-    score_batch_size = 2  # batch_size inside batch_score_last_assistant
+    N = 2400  # change as needed
+    batch_rows = 1  # number of dataset examples per batch (each yields 2 convs)
+    score_batch_size = 1  # batch_size inside batch_score_last_assistant
 
     for m in MODEL_IDS:
         evaluator = PerplexityEvaluator(m)
@@ -663,6 +645,7 @@ def main():
 
         del evaluator
         torch.cuda.empty_cache()
+
 
 if __name__ == "__main__":
     main()
