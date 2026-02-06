@@ -1,4 +1,4 @@
-# Null-Space Bias Mitigation for Reward Models
+# Mechanistic Reward Shaping
 
 Evaluates and mitigates spurious biases in reward models using null-space projection.
 
