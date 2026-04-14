@@ -4,6 +4,20 @@ This branch contains the code and results for the paper experiments. All links b
 
 ---
 
+## Prompts / Datasets
+
+| Experiment | Dataset | Prompt format |
+|------------|---------|---------------|
+| Length bias (probe + eval) | GSM8K questions from `data/gsm8k_soln.json` (generated via `meta-llama/Meta-Llama-3.1-8B-Instruct`). Each item has a `question`, a concise correct solution, a verbose correct solution, and short/long incorrect solutions. | `[{"role":"user","content":<question>},{"role":"assistant","content":<response>}]` — rendered with the reward model's own chat template via `apply_chat_template`. DeBERTa uses pair encoding `tokenizer(prompt, response)`. |
+| Huang et al. LWR baseline | Same GSM8K data as above. | Same as length bias. |
+| BoN candidate generation | AlpacaEval instructions (`alpaca_eval.json`, field `instruction`). | Chat template of the generator model (Llama-3.2-1B-Instruct). |
+| PPO training | AlpacaEval `instruction` field. First 512 examples = train split; remainder = eval. | Chat template of the policy model (Llama-3.2-1B-Instruct). |
+| Style bias (NLL split) | `allenai/tulu-3-wildchat-reused-on-policy-8b` (train split, 2400 prompts, seed 10). Each item is a `(prompt, completion)` pair. | Completion NLL scored per-byte: `s_m = -NLL_m(completion \| prompt) / bytes(completion)` for each of 10 LMs; label = 1 if `s_qwen3-8B − s_llama2-7b > median`. |
+
+**Generative LMs used for style NLL scoring:** `google/gemma-2-2b-it`, `google/gemma-2-9b-it`, `google/gemma-3-12b-it`, `meta-llama/Llama-2-7b-chat-hf`, `meta-llama/Llama-2-13b-chat-hf`, `meta-llama/Llama-3.1-8B-Instruct`, `Qwen/Qwen2.5-0.5B-Instruct`, `Qwen/Qwen2.5-7B-Instruct`, `Qwen/Qwen3-0.6B`, `Qwen/Qwen3-8B`.
+
+---
+
 ## Core Methodology
 
 | File | Description |
