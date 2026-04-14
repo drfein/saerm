@@ -16,21 +16,6 @@ This branch contains the code and results for the paper experiments. All links b
 
 ---
 
-## Length Bias Results
-
-> Allen RM GSM8K: 56.4% → 74.5%. DeBERTa GSM8K: 82.1% → 46.1%.
-
-| File | Description |
-|------|-------------|
-| [artifacts/results/length/length_allen_gsm8k_results.json](https://github.com/drfein/saerm/blob/paper-experiments/artifacts/results/length/length_allen_gsm8k_results.json) | Allen RM on GSM8K (56.4% baseline → 74.5% ours) |
-| [artifacts/results/length/length_deberta_gsm8k_results.json](https://github.com/drfein/saerm/blob/paper-experiments/artifacts/results/length/length_deberta_gsm8k_results.json) | DeBERTa on GSM8K (82.1% baseline → 46.1% ours) |
-| [artifacts/results/length/length_allen_results.json](https://github.com/drfein/saerm/blob/paper-experiments/artifacts/results/length/length_allen_results.json) | Allen RM no-variation baseline (80.9%) |
-| [artifacts/results/length/length_deberta_results.json](https://github.com/drfein/saerm/blob/paper-experiments/artifacts/results/length/length_deberta_results.json) | DeBERTa no-variation baseline (47.5%) |
-| [experiments/configs/length_allen_gsm8k.yaml](https://github.com/drfein/saerm/blob/paper-experiments/experiments/configs/length_allen_gsm8k.yaml) | Allen GSM8K config |
-| [experiments/configs/length_deberta_gsm8k.yaml](https://github.com/drfein/saerm/blob/paper-experiments/experiments/configs/length_deberta_gsm8k.yaml) | DeBERTa GSM8K config |
-| [experiments/run_experiment.py](https://github.com/drfein/saerm/blob/paper-experiments/experiments/run_experiment.py) | Experiment runner |
-
----
 
 ## Huang et al. (2025) Comparison
 
