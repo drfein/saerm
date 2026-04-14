@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Export multiple selector winners from a BoN details file.")
+    parser.add_argument("--bon-details-file", required=True)
+    parser.add_argument("--selectors", nargs="+", required=True)
+    parser.add_argument("--output-dir", required=True)
+    return parser.parse_args()
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def main() -> None:
+    args = parse_args()
+    rows = load_jsonl(Path(args.bon_details_file))
+    outdir = Path(args.output_dir)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    selector_files = {selector: outdir / f"{selector}.jsonl" for selector in args.selectors}
+    handles = {selector: path.open("w", encoding="utf-8") for selector, path in selector_files.items()}
+    try:
+        for row in rows:
+            idx = row.get("index")
+            prompt = str(row.get("prompt", ""))
+            winners = row["selector_best_response"]
+            for selector in args.selectors:
+                record = {
+                    "id": str(idx),
+                    "prompt": prompt,
+                    "response": winners[selector],
+                }
+                handles[selector].write(json.dumps(record) + "\n")
+    finally:
+        for handle in handles.values():
+            handle.close()
+
+    summary = {
+        "bon_details_file": str(Path(args.bon_details_file).resolve()),
+        "num_examples": len(rows),
+        "selectors": args.selectors,
+        "selector_files": {selector: str(path.resolve()) for selector, path in selector_files.items()},
+    }
+    (outdir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(summary, indent=2))
+
+
+if __name__ == "__main__":
+    main()

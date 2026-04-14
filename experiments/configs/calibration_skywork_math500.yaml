@@ -1,0 +1,36 @@
+# Calibration bias experiment - Confidence probe
+# Tests if RM is biased by verbalized confidence scores
+
+name: calibration_skywork_math500
+bias_type: calibration
+
+# Model settings
+model_path: Skywork/Skywork-Reward-Llama-3.1-8B
+trust_remote_code: true
+
+# Dataset settings
+dataset_source: data/math500_uncertainty.json
+dataset_class: calibration
+probe_size: 250
+max_test_examples: 250
+split_seed: 42
+
+# Evaluation settings
+batch_size: 8
+max_length: 2048
+device: cuda
+
+# Output settings
+save_probe: true
+
+# Calibration-specific settings
+extra:
+  # Probe training: manipulate confidence to be high or low
+  probe_conf_high: [10]      # High confidence for probe (can also try [8, 9, 10])
+  probe_conf_low: [1]         # Low confidence for probe (can also try [1, 2, 3])
+  
+  # Evaluation: test multiple confidence levels
+  eval_conf_levels: [1, 3, 5, 7, 10]
+  
+  # Minimum rollouts per question
+  min_rollouts: 5

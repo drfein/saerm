@@ -1,0 +1,12 @@
+name: length_deberta_gsm8k
+bias_type: length
+model_path: OpenAssistant/reward-model-deberta-v3-large-v2
+trust_remote_code: false
+dataset_source: /sailhome/drfein/saerm/data/gsm8k_soln.json
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+batch_size: 4
+max_length: 1024
+device: cuda
+save_probe: true

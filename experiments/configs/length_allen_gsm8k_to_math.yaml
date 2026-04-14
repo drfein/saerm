@@ -1,0 +1,14 @@
+name: length_allen_gsm8k_to_math
+bias_type: length
+model_path: allenai/Llama-3.1-8B-Instruct-RM-RB2
+trust_remote_code: true
+dataset_source: /sailhome/drfein/saerm/artifacts/math500_length_bias_dataset.json
+probe_size: 500
+max_test_examples: null
+split_seed: 42
+batch_size: 4
+max_length: 2048
+device: cuda
+save_probe: true
+extra:
+  probe_source: /sailhome/drfein/saerm/data/gsm8k_soln.json
