@@ -1,0 +1,8 @@
+{
+  "train_rows": 1554,
+  "eval_rows": 173,
+  "policy_model": "/lambda/nfs/daniel-dc/saerm_runs/sycophancy_paper_llama32_3b/sft/llama32_3b_sft_syco_fix1/merged",
+  "reward_model": "/lambda/nfs/daniel-dc/saerm_runs/sycophancy_paper_llama32_3b/rm/vanilla_rm_maty_probe_v1",
+  "probe_file": "/lambda/nfs/daniel-dc/saerm_runs/sycophancy_paper_llama32_3b/probes/sycophancy_phrase_probe_maty_v1/probe.pt",
+  "output_dir": "/lambda/nfs/daniel-dc/saerm_runs/sycophancy_paper_llama32_3b/ppo/ppo_debiased_probe_maty_v6_s10"
+}

@@ -1,0 +1,8 @@
+{
+  "num_examples": 10000,
+  "policy_model": "/lambda/nfs/daniel-dc/saerm_runs/alpacaeval_pipeline/trl_ppo_deberta_l32_1b_probequestions_bonprobe_r1_x4_20260404_020257/deberta_alpaca_probeq_length_nulled/final",
+  "offset": 0,
+  "response_words_mean": 227.4777,
+  "response_words_min": 1,
+  "response_words_max": 455
+}

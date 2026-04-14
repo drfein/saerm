@@ -1,0 +1,8 @@
+{
+  "dataset": "hh sft/train (unseen to Alpaca PPO training)",
+  "num_prompts": 10000,
+  "baseline_mean_words": 228.607,
+  "debiased_mean_words": 227.4777,
+  "mean_diff_debiased_minus_baseline": -1.1293000000000006,
+  "note": "debiased rerun with batch-size=32 for speed"
+}
